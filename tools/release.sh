@@ -318,18 +318,29 @@ fi
 
 # ---------- 发布段 ----------
 publish_source_tag() {
+    local tag_commit head_commit tag_exists=0
     if [ "$NO_TAG" -eq 1 ]; then
         log "--no-tag：跳过源码 tag"
         return
     fi
+    # 幂等重入：tag 已存在且指向当前 HEAD 时跳过创建（上次发布可能已推 tag 但
+    # 在后续 Release/官方仓步骤失败）；指向其它提交才是真正的冲突。
     if [ "$DRY_RUN" -eq 0 ] && git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-        die "源码 tag v${VERSION} 已存在"
+        tag_commit="$(git rev-list -n1 "refs/tags/v${VERSION}")"
+        head_commit="$(git rev-parse HEAD)"
+        if [ "$tag_commit" != "$head_commit" ]; then
+            die "源码 tag v${VERSION} 已存在且指向 ${tag_commit}（HEAD ${head_commit}）"
+        fi
+        log "源码 tag v${VERSION} 已存在且指向 HEAD，跳过创建（可安全重跑）"
+        tag_exists=1
     fi
     # tag 必须指向远端已有的提交：先推当前分支，再打 tag/push tag。
     if [ "$NO_PUSH" -eq 0 ]; then
         run git push origin HEAD
     fi
-    run git tag -a "v${VERSION}" -m "v${VERSION}"
+    if [ "$tag_exists" -eq 0 ]; then
+        run git tag -a "v${VERSION}" -m "v${VERSION}"
+    fi
     if [ "$NO_PUSH" -eq 1 ]; then
         log "--no-push：跳过 push 源码 tag"
     else
@@ -344,6 +355,15 @@ publish_gh_release() {
     fi
     if [ "$DRY_RUN" -eq 0 ]; then
         command -v gh >/dev/null 2>&1 || die "未找到 gh，无法创建 Release（或加 --no-release）"
+        # 幂等重入：Release 已存在时覆盖上传资产，避免上次在资产上传阶段失败后
+        # 重跑被 gh release create 的 422 拦住。
+        if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            log "GitHub Release v${VERSION} 已存在，覆盖上传资产（可安全重跑）"
+            run gh release upload "v${VERSION}" \
+                "$APK" "$ARTIFACT_DIR/mapping.txt" "$ARTIFACT_DIR/SHA256SUMS" \
+                "$ARTIFACT_DIR/release-notes.md" --clobber
+            return
+        fi
     fi
     run gh release create "v${VERSION}" \
         "$APK" "$ARTIFACT_DIR/mapping.txt" "$ARTIFACT_DIR/SHA256SUMS" "$ARTIFACT_DIR/release-notes.md" \
@@ -357,7 +377,7 @@ sync_official_repo() {
         return
     fi
     local official_tag="${VERSION_CODE}-${VERSION}"
-    local work_dir dl_dir apk_name local_sha remote_sha
+    local work_dir dl_dir apk_name local_sha remote_sha tag_commit head_commit
     local -a tracked_apks=()
 
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -404,10 +424,18 @@ sync_official_repo() {
     else
         git -C "$work_dir" commit -m "Release ${VERSION} (${VERSION_CODE})"
     fi
+    # 幂等重入：远端已推送的 tag 会被 gh repo clone 取回。tag 指向当前发布提交
+    # 时跳过创建；指向其它提交说明官方仓已被改过，直接失败而不是覆盖。
     if git -C "$work_dir" rev-parse -q --verify "refs/tags/${official_tag}" >/dev/null; then
-        die "官方仓 tag ${official_tag} 已存在"
+        tag_commit="$(git -C "$work_dir" rev-list -n1 "refs/tags/${official_tag}")"
+        head_commit="$(git -C "$work_dir" rev-parse HEAD)"
+        if [ "$tag_commit" != "$head_commit" ]; then
+            die "官方仓 tag ${official_tag} 已存在且指向 ${tag_commit}（当前 HEAD ${head_commit}）"
+        fi
+        log "官方仓 tag ${official_tag} 已存在且指向当前提交，跳过创建（可安全重跑）"
+    else
+        git -C "$work_dir" tag -a "$official_tag" -m "$official_tag"
     fi
-    git -C "$work_dir" tag -a "$official_tag" -m "$official_tag"
     log "官方仓 SUMMARY 保留未改动"
 
     if [ "$NO_PUSH" -eq 1 ]; then
@@ -420,7 +448,11 @@ sync_official_repo() {
 
     # ---------- 官方仓 Release：无 CI 自动生成，push 后主动创建（幂等） ----------
     if gh release view "$official_tag" --repo "$OFFICIAL_REPO" >/dev/null 2>&1; then
-        log "官方仓 Release ${official_tag} 已存在，跳过创建"
+        log "官方仓 Release ${official_tag} 已存在，覆盖上传资产（可安全重跑）"
+        run gh release upload "$official_tag" \
+            --repo "$OFFICIAL_REPO" --clobber \
+            "$APK" "$ARTIFACT_DIR/mapping.txt" "$ARTIFACT_DIR/SHA256SUMS" \
+            "$ARTIFACT_DIR/release-notes.md"
     else
         log "创建官方仓 Release ${official_tag}（$OFFICIAL_REPO）"
         run gh release create "$official_tag" \

@@ -36,6 +36,15 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 
+# 锚点目标类黑名单：宿主升级不会改变框架类，把框架类写进锚点表等于 hook 所有
+# 进程/系统类（运行时 AnchorTable 同样拒绝）。仅检查锚点目标类 c，不检查签名
+# 参数里的框架类型（Landroid/content/Context; 等是宿主方法的正常参数）。
+FRAMEWORK_CLASS_PREFIXES = ("android.", "java.", "dalvik.", "androidx.", "kotlin.")
+
+
+def is_framework_class(className):
+    return isinstance(className, str) and className.startswith(FRAMEWORK_CLASS_PREFIXES)
+
 # 锚点单一事实来源。key -> c/m/s + feature/critical/note。
 # s 以 "(" 开头表示方法（methods 表校验）；否则表示字段类型描述符
 # （fields 表校验，如 "Ljava/lang/String;"）。
@@ -722,6 +731,11 @@ def main():
         if not isinstance(meta.get("critical"), bool):
             raise SystemExit("ERROR: anchor %s 的 critical 必须是布尔值" % key)
         cls, name, sig = meta["c"], meta["m"], meta["s"]
+        if is_framework_class(cls):
+            raise SystemExit(
+                "ERROR: anchor %s 的目标类是框架类 %s（%s）；锚点只允许宿主类，"
+                "框架类 hook 请直接在 hooks/ 中显式安装"
+                % (key, cls, ", ".join(FRAMEWORK_CLASS_PREFIXES)))
         if sig.startswith("("):
             table = "methods"
             full = "L%s;->%s%s" % (cls.replace(".", "/"), name, sig)
@@ -749,6 +763,10 @@ def main():
 
     classes = {}
     for key, cls in CLASSES.items():
+        if is_framework_class(cls):
+            raise SystemExit(
+                "ERROR: class anchor %s 指向框架类 %s（%s）；锚点只允许宿主类"
+                % (key, cls, ", ".join(FRAMEWORK_CLASS_PREFIXES)))
         try:
             count = query_count(
                 dexsql_path, cache_file,

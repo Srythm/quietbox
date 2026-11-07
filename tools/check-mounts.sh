@@ -285,24 +285,37 @@ def warn(message):
     print("WARN: %s" % message)
 
 
-def load_json_no_duplicates(path):
-    def no_duplicates(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("重复键：%s" % key)
-            result[key] = value
-        return result
+def load_anchor_schema():
+    """anchors.json schema 规则的唯一实现在 xposed-core/tools/anchor_schema.py。
 
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle, object_pairs_hook=no_duplicates)
+    解析顺序与 settings.gradle 的 includeBuild 一致：XPOSED_CORE_PATH 优先，
+    否则从 REPO_ROOT 逐级向上找兄弟仓 xposed-core/tools。找不到即硬失败，
+    不允许本仓再留一份规则副本（规则漂移正是这样产生的）。
+    """
+    import importlib.util
+
+    candidates = []
+    env = os.environ.get("XPOSED_CORE_PATH")
+    if env:
+        candidates.append(Path(env) / "tools")
+    for parent in [REPO_ROOT] + list(REPO_ROOT.parents):
+        candidates.append(parent / "xposed-core" / "tools")
+    for tools_dir in candidates:
+        script = tools_dir / "anchor_schema.py"
+        if script.is_file():
+            spec = importlib.util.spec_from_file_location("anchor_schema", script)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise SystemExit(1)
 
 
 # ------------------------------------------------------------ 锚点表完整性
 out("==> anchors: %s" % ANCHORS_PATH)
+anchor_schema = load_anchor_schema()
 try:
-    payload = load_json_no_duplicates(ANCHORS_PATH)
-except (OSError, ValueError, json.JSONDecodeError) as exc:
+    payload = anchor_schema.load_document(ANCHORS_PATH)
+except (OSError, ValueError) as exc:
     out("FAIL: 无法解析 anchors.json：%s" % exc)
     raise SystemExit(1)
 
@@ -314,51 +327,17 @@ app_version = payload.get("appVersion")
 version_code = payload.get("versionCode")
 schema_version = payload.get("schemaVersion")
 generated_by = payload.get("generatedBy")
-anchors = payload.get("anchors")
-classes = payload.get("classes")
 
-if isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
-    fail("schemaVersion 缺失或不是 %d：%r" % (SCHEMA_VERSION, schema_version))
-if not isinstance(app_version, str) or not app_version.strip():
-    fail("appVersion 缺失或不是非空字符串")
-if isinstance(version_code, bool) or not isinstance(version_code, int) or version_code <= 0:
-    fail("versionCode 缺失或不是正整数")
-if generated_by != "tools/gen_anchors.py":
-    fail("generatedBy 不是 tools/gen_anchors.py：%r" % generated_by)
-if not isinstance(anchors, dict):
-    fail("anchors 缺失或不是对象")
-    anchors = {}
-if not isinstance(classes, dict):
-    fail("classes 缺失或不是对象")
-    classes = {}
+# schema 规则全部来自共享 anchor_schema.py：本仓不再维护第二份（否则四仓规则
+# 再次漂移且无人发现）。CHECKLIST_SIZE 与 README 目标版本是本仓特有约束，留下。
+for message in anchor_schema.validate_document(payload):
+    fail(message)
+anchors = payload.get("anchors") if isinstance(payload.get("anchors"), dict) else {}
+classes = payload.get("classes") if isinstance(payload.get("classes"), dict) else {}
 
 overlap = sorted(set(anchors) & set(classes))
 if overlap:
     fail("anchors 与 classes 存在同名 key：%s" % ", ".join(overlap))
-
-for key, entry in sorted(anchors.items()):
-    if not isinstance(key, str) or not key:
-        fail("锚点 key 非法：%r" % (key,))
-        continue
-    if not isinstance(entry, dict):
-        fail("锚点 %s 不是对象" % key)
-        continue
-    for field in ("c", "m", "s", "feature", "note"):
-        value = entry.get(field)
-        if not isinstance(value, str) or not value:
-            fail("锚点 %s 缺少必填字段 %s" % (key, field))
-    if not isinstance(entry.get("critical"), bool):
-        fail("锚点 %s 的 critical 不是布尔值" % key)
-    feature = entry.get("feature")
-    if isinstance(feature, str) and feature \
-            and not feature.startswith(("AD-", "UI-", "PV-", "EN-", "EX-")):
-        fail("锚点 %s 的 feature 不是统一功能编号：%r" % (key, feature))
-
-for key, cls in sorted(classes.items()):
-    if not isinstance(key, str) or not key:
-        fail("类锚点 key 非法：%r" % (key,))
-    if not isinstance(cls, str) or not cls:
-        fail("类锚点 %s 不是非空字符串" % key)
 
 if len(anchors) != CHECKLIST_SIZE:
     fail("anchors 条目数 %d，必须覆盖 check-mounts 的 %d 项"

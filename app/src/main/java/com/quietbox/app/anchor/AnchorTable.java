@@ -55,6 +55,7 @@ public final class AnchorTable {
         SIGNATURE_MISMATCH("signature mismatch"),
         RETURN_TYPE_MISMATCH("return type mismatch"),
         FIELD_TYPE_MISMATCH("field type mismatch"),
+        FRAMEWORK_CLASS("framework class"),
         ERROR("resolve error");
 
         final String label;
@@ -119,7 +120,11 @@ public final class AnchorTable {
                 warn(key, Failure.MISSING_KEY, "missing anchor entry", null);
                 return null;
             }
-            Lookup<Method> lookup = resolveMethod(this, loader, key, entry.optString("c"),
+            String className = entry.optString("c");
+            if (rejectFrameworkTarget(this, key, className)) {
+                return null;
+            }
+            Lookup<Method> lookup = resolveMethod(this, loader, key, className,
                     entry.optString("m"), entry.optString("s"));
             if (lookup.value == null) {
                 // 失败原因已由 resolveMethod 写 WARN；保持 fail-open，下次仍会重试。
@@ -148,6 +153,9 @@ public final class AnchorTable {
             String name = classes.optString(key, "");
             if (name.isEmpty()) {
                 warn(key, Failure.MISSING_KEY, "missing class entry", null);
+                return null;
+            }
+            if (rejectFrameworkTarget(this, key, name)) {
                 return null;
             }
             Lookup<Class<?>> lookup = resolveClass(this, loader, key, name);
@@ -181,7 +189,11 @@ public final class AnchorTable {
                 warn(key, Failure.MISSING_KEY, "missing anchor entry", null);
                 return null;
             }
-            Lookup<Field> lookup = resolveField(this, loader, key, entry.optString("c"),
+            String className = entry.optString("c");
+            if (rejectFrameworkTarget(this, key, className)) {
+                return null;
+            }
+            Lookup<Field> lookup = resolveField(this, loader, key, className,
                     entry.optString("m"), entry.optString("s"));
             if (lookup.value == null) {
                 return null;
@@ -193,6 +205,38 @@ public final class AnchorTable {
             warn(key, Failure.ERROR, "field anchor resolve error", t);
             return null;
         }
+    }
+
+    /**
+     * 锚点目标类不得是框架类：hooks 只挂宿主实现，框架类由代码按需直连。
+     * 与 tools/gen_anchors.py 的 FRAMEWORK_CLASS_PREFIXES 保持同一名单。
+     */
+    private static final String[] FRAMEWORK_CLASS_PREFIXES = {
+            "android.", "java.", "dalvik.", "androidx.", "kotlin.",
+    };
+
+    /** 是否为框架类名（按前缀判断，签名参数里的框架类型不受此限制）。 */
+    static boolean isFrameworkClass(String className) {
+        if (className == null) {
+            return false;
+        }
+        String name = className.trim();
+        for (String prefix : FRAMEWORK_CLASS_PREFIXES) {
+            if (name.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 框架类锚点直接判失效并记录 WARN，保持 fail-open。 */
+    private static boolean rejectFrameworkTarget(AnchorTable owner, String key,
+                                                 String className) {
+        if (!isFrameworkClass(className)) {
+            return false;
+        }
+        warn(owner, key, Failure.FRAMEWORK_CLASS, className, null);
+        return true;
     }
 
     /**
