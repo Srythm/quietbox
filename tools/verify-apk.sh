@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GRADLE_FILE="$ROOT_DIR/app/build.gradle"
+VERSION_GATE="$ROOT_DIR/app/src/main/java/com/quietbox/app/VersionGate.java"
 
 EXPECTED_CERT_SHA256="eb1ef863244840365264654a12179d33f41b402cf136c59ef3e59553bffacebd"
 EXPECTED_SCOPE="com.xingin.xhs"
@@ -28,6 +29,7 @@ EXPECTED_VERSION=""
 EXPECTED_CODE=""
 OUT_DIR=""
 FAILED=0
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
 
 usage() {
     sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -296,6 +298,36 @@ if [ "$ACTUAL_VERSION" = "$EXPECTED_VERSION" ]; then
     ok "versionName=$ACTUAL_VERSION"
 else
     bad "versionName 期望 $EXPECTED_VERSION，实际 '${ACTUAL_VERSION:-<未知>}'"
+fi
+
+# 6b. APK 内 anchors.json 必须存在，且 appVersion/versionCode 与 VersionGate 适配版本一致。
+# 锚点表漏打包（运行时按 fail-open 处理）或改了适配版本却忘记重新生成表时，
+# 发版门禁必须在这里硬失败，而不是等到装上真机才静默失效。
+if [ ! -f "$TMP_DIR/anchors.json" ]; then
+    bad "APK 内缺少 anchors.json（锚点表未打包，运行时会 fail-open）"
+elif [ -z "$PYTHON_BIN" ]; then
+    bad "未找到 python3/python，无法校验 anchors.json 版本"
+else
+    GATE_VERSION="$(sed -nE 's/.*SUPPORTED_VERSION[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$VERSION_GATE" | head -1)"
+    GATE_CODE="$(sed -nE 's/.*SUPPORTED_VERSION_CODE[[:space:]]*=[[:space:]]*([0-9]+)L?.*/\1/p' "$VERSION_GATE" | head -1)"
+    if [ -z "$GATE_VERSION" ]; then
+        bad "无法从 VersionGate.java 读取 SUPPORTED_VERSION"
+    else
+        ANCHORS_VERSION="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("appVersion",""))' "$TMP_DIR/anchors.json" 2>/dev/null || true)"
+        ANCHORS_CODE="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("versionCode",""))' "$TMP_DIR/anchors.json" 2>/dev/null || true)"
+        if [ "$ANCHORS_VERSION" = "$GATE_VERSION" ]; then
+            ok "anchors.json appVersion=$ANCHORS_VERSION (适配版本)"
+        else
+            bad "anchors.json appVersion 期望适配版本 $GATE_VERSION，实际 '${ANCHORS_VERSION:-<未找到>}'"
+        fi
+        if [ -z "$GATE_CODE" ]; then
+            ok "anchors.json versionCode=${ANCHORS_CODE:-<未提供>}（VersionGate 未声明 SUPPORTED_VERSION_CODE，跳过比对）"
+        elif [ "$ANCHORS_CODE" = "$GATE_CODE" ]; then
+            ok "anchors.json versionCode=$ANCHORS_CODE (适配版本)"
+        else
+            bad "anchors.json versionCode 期望适配版本 $GATE_CODE，实际 '${ANCHORS_CODE:-<未找到>}'"
+        fi
+    fi
 fi
 
 # 7. 签名证书 SHA-256
