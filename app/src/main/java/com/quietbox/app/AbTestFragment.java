@@ -1,5 +1,6 @@
 package com.quietbox.app;
 
+import android.app.Activity;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
@@ -34,6 +35,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import io.github.libxposed.service.XposedService;
 
@@ -47,6 +50,16 @@ public class AbTestFragment extends PreferenceFragmentCompat {
 
     private static final int OTHER_BATCH = 50;
     private static final String CATALOG = "ab_catalog.tsv";
+    /** 宿主每 3 秒回传一次探测值；停留本页时按同样节奏检查是否需要重绘「其他」。 */
+    private static final long OTHER_POLL_MS = 3_000L;
+
+    /** 本地副本读取放后台，主线程只负责比较结果与复用已有 Preference 更新。 */
+    private static final ExecutorService OTHER_POLL_EXECUTOR =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "QuietBox-AB-other-poll");
+                t.setDaemon(true);
+                return t;
+            });
 
     private final ActivityResultLauncher<String> mCreateDoc =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("text/csv"),
@@ -62,6 +75,17 @@ public class AbTestFragment extends PreferenceFragmentCompat {
 
     private final List<String> mOtherKeys = new ArrayList<>();
     private final Map<String, String> mOtherReport = new LinkedHashMap<>();
+    /** 「其他」区最近一次真正渲染的完整快照，用于判断后台轮询到的新数据是否需要重绘。 */
+    private Map<String, String> mOtherSnapshot = Collections.emptyMap();
+    private long mOtherSnapshotLast;
+    /** 停留本页时定时检查宿主回传；离开页面/切 tab 必须移除。 */
+    private final Handler mOtherHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mOtherPoll = new Runnable() {
+        @Override
+        public void run() {
+            pollOther();
+        }
+    };
     /** 每个 key 最近一次写入的序号：旧回调不能覆盖新状态。 */
     private final Map<String, Long> mWriteSeq = new HashMap<>();
     private long mWriteCounter;
@@ -80,7 +104,8 @@ public class AbTestFragment extends PreferenceFragmentCompat {
 
     @Override
     public void onDestroyView() {
-        // view 已销毁，旧写入的回调不能再改 UI。
+        // view 已销毁，旧写入的回调不能再改 UI；轮询也必须停掉。
+        stopOtherPolling();
         mWriteSeq.clear();
         super.onDestroyView();
     }
@@ -118,6 +143,25 @@ public class AbTestFragment extends PreferenceFragmentCompat {
     public void onResume() {
         super.onResume();
         refresh();
+        startOtherPolling();
+    }
+
+    @Override
+    public void onPause() {
+        stopOtherPolling();
+        super.onPause();
+    }
+
+    @Override
+    public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        if (hidden) {
+            stopOtherPolling();
+        } else {
+            // MainActivity 用 hide/show 保留 Fragment，从别的 tab 回来不会走 onResume。
+            refresh();
+            startOtherPolling();
+        }
     }
 
     private void build(PreferenceScreen screen) {
@@ -253,7 +297,7 @@ public class AbTestFragment extends PreferenceFragmentCompat {
                 updateItem(item, test, report, overrides);
             }
         }
-        refreshOther(report);
+        refreshOther(report, mAb.lastReport());
     }
 
     /**
@@ -329,7 +373,7 @@ public class AbTestFragment extends PreferenceFragmentCompat {
     }
 
     /** 重置分页并加载第一批；后续由滚动监听 / 「加载更多」增量追加。 */
-    private void refreshOther(Map<String, String> report) {
+    private void refreshOther(Map<String, String> report, long lastReport) {
         if (mOther == null) {
             return;
         }
@@ -342,14 +386,16 @@ public class AbTestFragment extends PreferenceFragmentCompat {
         mOtherLoaded = 0;
         mOtherKeys.clear();
         mOtherReport.clear();
+        // 记录本次真正渲染出去的快照，轮询据此判断宿主是否回传了新 key/值。
+        mOtherSnapshot = new LinkedHashMap<>(report);
+        mOtherSnapshotLast = lastReport;
 
-        long last = mAb.lastReport();
         Preference info = new Preference(ctx);
         info.setSelectable(false);
-        info.setSummary(last == 0
+        info.setSummary(lastReport == 0
                 ? getString(R.string.ab_other_empty)
                 : getString(R.string.ab_other_last,
-                DateFormat.format("MM-dd HH:mm:ss", last)));
+                DateFormat.format("MM-dd HH:mm:ss", lastReport)));
         mOther.addPreference(info);
 
         for (Map.Entry<String, String> e : report.entrySet()) {
@@ -361,6 +407,77 @@ public class AbTestFragment extends PreferenceFragmentCompat {
         Collections.sort(mOtherKeys);
 
         loadMoreOther();
+    }
+
+    /** 停留本页时每 3 秒检查一次宿主回传，避免「其他」区一直停在进入页面时的快照。 */
+    private void startOtherPolling() {
+        mOtherHandler.removeCallbacks(mOtherPoll);
+        if (!isResumed() || isHidden()) {
+            return;
+        }
+        mOtherHandler.postDelayed(mOtherPoll, OTHER_POLL_MS);
+    }
+
+    private void stopOtherPolling() {
+        mOtherHandler.removeCallbacks(mOtherPoll);
+    }
+
+    /**
+     * 本地副本读取放后台（SharedPreferences 不保证主线程零 I/O），
+     * 只有探测值或回传时间真的变化时才在主线程重绘「其他」区。
+     */
+    private void pollOther() {
+        if (!isAdded() || !isResumed() || isHidden() || getView() == null) {
+            return;
+        }
+        final Context ctx = getContext();
+        if (ctx == null) {
+            return;
+        }
+        // 不在这里 ensureStores：service 换绑后构造 store 会走 binder，绑定回调
+        // 已经会触发 refresh() 重建；轮询只读现有 store 的本地副本。
+        final AbConfigStore store = mAb;
+        final Activity host = getActivity();
+        if (host == null || store == null) {
+            return;
+        }
+        OTHER_POLL_EXECUTOR.execute(() -> {
+            Map<String, String> latest;
+            long last;
+            try {
+                latest = store.report();
+                last = store.lastReport();
+            } catch (Throwable t) {
+                latest = null;
+                last = 0L;
+            }
+            final Map<String, String> report = latest;
+            final long reportLast = last;
+            host.runOnUiThread(() -> {
+                if (!isAdded() || !isResumed() || isHidden() || getView() == null
+                        || getActivity() != host) {
+                    return;
+                }
+                if (report != null
+                        && otherReportChanged(mOtherSnapshot, mOtherSnapshotLast,
+                        report, reportLast)) {
+                    refreshOther(report, reportLast);
+                }
+                startOtherPolling();
+            });
+        });
+    }
+
+    /**
+     * 「其他」区是否需要重绘：探测值集合或最近回传时间任一变化都要刷新。
+     * 包级可见：由 AbTestFragmentTest 固定该判定。
+     */
+    static boolean otherReportChanged(Map<String, String> rendered, long renderedLast,
+                                      Map<String, String> latest, long latestLast) {
+        if (renderedLast != latestLast) {
+            return true;
+        }
+        return rendered == null ? latest != null : !rendered.equals(latest);
     }
 
     private void loadMoreOther() {
@@ -512,14 +629,33 @@ public class AbTestFragment extends PreferenceFragmentCompat {
                 .append(esc(title)).append('\n');
     }
 
-    private static String esc(String value) {
+    /**
+     * CSV 转义。除逗号/引号/换行外，还要防公式注入：Excel/WPS 会把以
+     * {@code = + - @}（以及制表符/回车）开头的单元格当公式执行，而探测值来自
+     * 宿主 AB 下发，可能被恶意内容注入。这类值前加单引号强制按文本处理。
+     */
+    static String esc(String value) {
         if (value == null) {
             return "";
         }
-        boolean quote = value.indexOf(',') >= 0 || value.indexOf('"') >= 0
-                || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0;
-        String escaped = value.replace("\"", "\"\"");
+        String safe = neutralizeFormula(value);
+        boolean quote = safe.indexOf(',') >= 0 || safe.indexOf('"') >= 0
+                || safe.indexOf('\n') >= 0 || safe.indexOf('\r') >= 0;
+        String escaped = safe.replace("\"", "\"\"");
         return quote ? "\"" + escaped + "\"" : escaped;
+    }
+
+    /** 以 Excel 公式起始字符开头的值加单引号，避免 CSV 被当作公式执行。 */
+    static String neutralizeFormula(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        char first = value.charAt(0);
+        if (first == '=' || first == '+' || first == '-' || first == '@'
+                || first == '\t' || first == '\r') {
+            return "'" + value;
+        }
+        return value;
     }
 
     private static int countRows(String csv) {

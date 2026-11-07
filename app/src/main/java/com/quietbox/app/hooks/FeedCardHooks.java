@@ -91,21 +91,24 @@ final class FeedCardHooks {
 
     private static XposedInterface.Hooker dropHook(XposedModule module, Feature f,
                                                    String where, int argIndex, String kind) {
-        return chain -> {
-            try {
-                Object arg = chain.getArg(argIndex);
-                if (arg instanceof List) {
-                    List<?> list = (List<?>) arg;
-                    seenOnce(module, f, where, list.size());
-                    int removed = drop(module, f, list, kind);
-                    if (removed > 0) {
-                        HookKit.hit(module, f, where + " removed=" + removed);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object arg = chain.getArg(argIndex);
+                    if (arg instanceof List) {
+                        List<?> list = (List<?>) arg;
+                        seenOnce(module, f, where, list.size());
+                        int removed = drop(module, f, list, kind);
+                        if (removed > 0) {
+                            HookKit.hit(module, f, where + " removed=" + removed);
+                        }
                     }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error " + where, t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error " + where, t);
+                return chain.proceed();
             }
-            return chain.proceed();
         };
     }
 

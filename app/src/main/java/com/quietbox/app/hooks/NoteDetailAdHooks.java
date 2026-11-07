@@ -48,18 +48,21 @@ final class NoteDetailAdHooks {
     }
 
     private static XposedInterface.Hooker hideHook(XposedModule module, Feature f, String kind) {
-        return chain -> {
-            try {
-                Object self = chain.getThisObject();
-                if (self instanceof View) {
-                    ((View) self).setVisibility(View.GONE);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object self = chain.getThisObject();
+                    if (self instanceof View) {
+                        ((View) self).setVisibility(View.GONE);
+                    }
+                    HookKit.hit(module, f, "AdvertV2View " + kind + " hidden");
+                    // void 方法：不 proceed 即不绑定广告数据。
+                    return null;
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error AdvertV2View " + kind, t);
+                    return chain.proceed();
                 }
-                HookKit.hit(module, f, "AdvertV2View " + kind + " hidden");
-                // void 方法：不 proceed 即不绑定广告数据。
-                return null;
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error AdvertV2View " + kind, t);
-                return chain.proceed();
             }
         };
     }

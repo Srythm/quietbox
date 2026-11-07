@@ -72,7 +72,8 @@ public class SettingsFragment extends PreferenceFragmentCompat {
     public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
         setPreferencesFromResource(R.xml.prefs, rootKey);
         mStoreService = ServiceBridge.get();
-        mStore = new ConfigStore(requireContext());
+        // ConfigStore 构造会触发 getRemotePreferences binder，交给 refresh() 的后台
+        // 单线程创建（DESIGN §14：主线程只做 UI）。
         bindFeatures();
         bindPages();
         bindReset();
@@ -149,6 +150,12 @@ public class SettingsFragment extends PreferenceFragmentCompat {
      *         MaterialSwitch 会回滚，同时 Toast 提示。
      */
     private boolean writeBoolean(String key, boolean requested) {
+        if (mStore == null) {
+            // 后台构造尚未完成：此时没有可写的 remote 通道，直接拒绝。
+            Toast.makeText(requireContext(), R.string.action_write_failed,
+                    Toast.LENGTH_SHORT).show();
+            return false;
+        }
         long seq = mWriteGate.begin(key);
         boolean accepted = mStore.put(key, requested,
                 committed -> onWriteResult(key, requested, seq, committed));
@@ -231,10 +238,25 @@ public class SettingsFragment extends PreferenceFragmentCompat {
         if (reset == null) {
             return;
         }
+        // 后台构造未完成或构造失败时 mStore 为 null：此时没有可写的 remote 通道，
+        // 不能触发恢复默认（否则 NPE），等 refresh() 重建 store 后重试。
+        if (!canReset(mStore)) {
+            Toast.makeText(requireContext(), R.string.action_write_failed,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
         mResetInFlight = true;
         reset.setEnabled(false);
         // 返回值只表示是否排入后台队列；真实结果（含 remote 不可用）统一走回调。
         mStore.resetToDefaults(this::onResetResult);
+    }
+
+    /**
+     * 「恢复默认」入口的可用性判定：store 已构造完成才允许触发。
+     * 包级可见：由 SettingsFragmentLogicTest 固定（后台构造期/构造失败都不得触发）。
+     */
+    static boolean canReset(ConfigStore store) {
+        return store != null;
     }
 
     /** ConfigStore 已在主线程回调；再 post 一次兼容后台线程回调，保证只改 UI 线程。 */
@@ -281,10 +303,58 @@ public class SettingsFragment extends PreferenceFragmentCompat {
 
         // 同一 service 实例内 remote prefs 不会变，复用 mStore 可省掉每次 refresh 的 binder。
         if (!ConfigWritePolicy.reuseStore(mStore != null, mStoreService, service)) {
-            mStore = new ConfigStore(requireContext());
-            mStoreService = service;
+            // 构造 ConfigStore 会同步访问 remote prefs binder，不能在主线程做。
+            buildStoreAsync(service);
+            return;
         }
-        boolean writable = mStore.remote();
+        applyRefresh(service);
+    }
+
+    /**
+     * 后台构造 ConfigStore，结果回主线程后再套用；Fragment 已换绑/销毁时丢弃。
+     * 节流保证同一时刻通常只有一次构造，重复提交也只会以最后一次结果为准。
+     */
+    private void buildStoreAsync(XposedService service) {
+        Context context = getContext();
+        Activity host = getActivity();
+        if (context == null || host == null) {
+            return;
+        }
+        final Context app = context.getApplicationContext();
+        if (app == null) {
+            return;
+        }
+        STATUS_EXECUTOR.execute(() -> {
+            ConfigStore created;
+            try {
+                created = new ConfigStore(app);
+            } catch (Throwable t) {
+                Log.w(TAG, "config store build failed", t);
+                created = null;
+            }
+            final ConfigStore store = created;
+            host.runOnUiThread(() -> {
+                // onCreatePreferences 阶段 view 可能尚未创建，但 Preference 对象已就绪；
+                // 这里只写 Preference 值，不依赖 getView()。
+                if (!isAdded() || getActivity() != host) {
+                    return;
+                }
+                if (ServiceBridge.get() != service) {
+                    // service 已换绑，绑定回调会触发下一次 refresh 重建。
+                    return;
+                }
+                mStore = store;
+                mStoreService = service;
+                // service 换绑后旧的回滚基线来自另一份存储，不再可信。
+                mWriteGate.clear();
+                applyRefresh(service);
+            });
+        });
+    }
+
+    /** 主线程：用已构造好的 store 刷新开关/状态卡/横幅，不再触发 binder。 */
+    private void applyRefresh(XposedService service) {
+        boolean writable = mStore != null && mStore.remote();
 
         Preference status = findPreference("status");
         if (status != null) {
@@ -302,10 +372,15 @@ public class SettingsFragment extends PreferenceFragmentCompat {
             Preference p = findPreference(f.key);
             if (p instanceof MaterialSwitchPreference) {
                 MaterialSwitchPreference sw = (MaterialSwitchPreference) p;
-                boolean checked = mStore.get(f.key, f.defaultEnabled);
-                sw.setCheckedValue(checked);
-                // 这里的回读值不能写进确认值：写入在途或失败时 RemotePreferences
-                // 的内存已是新值，只有 commit 成功的回调才有资格确认落盘（见 onWriteResult）。
+                boolean checked = mStore != null
+                        ? mStore.get(f.key, f.defaultEnabled) : f.defaultEnabled;
+                // 回读值只作为「还没有确认值」时的回滚基线。写失败后
+                // RemotePreferences 内存已是未落盘的新值，不能直接回灌 UI；
+                // 有在途写入时保留用户刚做的乐观选择，等回调确认或回滚。
+                mWriteGate.seed(f.key, checked);
+                if (!mWriteGate.isPending(f.key)) {
+                    sw.setCheckedValue(mWriteGate.rollback(f.key, checked));
+                }
                 // 框架没绑定时写不进去，置灰避免“改了没用”；blocked 始终置灰。
                 sw.setEnabled(writable && !f.blocked());
             }
@@ -314,9 +389,13 @@ public class SettingsFragment extends PreferenceFragmentCompat {
         Preference token = findPreference(Config.KEY_STRIP_XSEC_TOKEN);
         if (token instanceof MaterialSwitchPreference) {
             MaterialSwitchPreference sw = (MaterialSwitchPreference) token;
-            boolean checked = mStore.get(Config.KEY_STRIP_XSEC_TOKEN,
-                    Config.DEFAULT_STRIP_XSEC_TOKEN);
-            sw.setCheckedValue(checked);
+            boolean checked = mStore != null
+                    ? mStore.get(Config.KEY_STRIP_XSEC_TOKEN, Config.DEFAULT_STRIP_XSEC_TOKEN)
+                    : Config.DEFAULT_STRIP_XSEC_TOKEN;
+            mWriteGate.seed(Config.KEY_STRIP_XSEC_TOKEN, checked);
+            if (!mWriteGate.isPending(Config.KEY_STRIP_XSEC_TOKEN)) {
+                sw.setCheckedValue(mWriteGate.rollback(Config.KEY_STRIP_XSEC_TOKEN, checked));
+            }
             // 父子开关交给 prefs.xml 的 android:dependency：这里手动 setEnabled 只改
             // mEnabled，父开关后来开启时只会恢复 mDependencyMet，子项会一直灰着。
             // writable=false 的置灰由父开关传播（MaterialSwitchPreference.shouldDisableDependents

@@ -48,6 +48,16 @@ public class HookKitSourceScanTest {
             "崩溃路径不得使用不记日志的 CrashFlush.run；请用 "
                     + "runBestEffort(..., CRASH_LOGGER, TAG)");
 
+    /** DESIGN §14 第 1 条：Hooker 一律匿名内部类，lambda 会在 bootclasspath desugar 下失效。 */
+    private static final SourceScan.Rule NO_HOOKER_LAMBDA = new SourceScan.Rule(
+            "\\bchain\\s*->",
+            "Hooker 不得使用 lambda；请写成 new XposedInterface.Hooker() { ... }");
+
+    /** 框架类挂载只允许 PV-01 的运行时发现入口使用。 */
+    private static final SourceScan.Rule DISCOVERY_INSTALL_CALLSITE = new SourceScan.Rule(
+            "\\bHookKit\\.installForDiscovery\\s*\\(",
+            "只有 ScreenShotHooks 可以使用框架类发现入口");
+
     @Test
     public void crashHandlerFlushesSynchronouslyWithinBudget() throws IOException {
         List<SourceScan.Finding> findings = SourceScan.scan(hooksSource(), CRASH_FLUSH);
@@ -100,6 +110,38 @@ public class HookKitSourceScanTest {
                 source, "A.java", NO_EXTERNAL_SILENT_NAME_LOOKUP);
 
         assertEquals(1, findings.size());
+    }
+
+    @Test
+    public void hookersAreAnonymousClassesNotLambdas() throws IOException {
+        List<SourceScan.Finding> findings = SourceScan.scan(
+                hooksSource(), Collections.singletonList(NO_HOOKER_LAMBDA));
+
+        assertTrue("Hooker 不得使用 lambda（DESIGN §14 第 1 条）：" + findings,
+                findings.isEmpty());
+    }
+
+    @Test
+    public void hookerLambdaRuleCatchesLegacyStyle() {
+        String source = "class A { void a() { HookKit.install(m, f, \"x\", method, chain -> {"
+                + " return chain.proceed(); }); } }";
+
+        List<SourceScan.Finding> findings = SourceScan.scanSource(
+                source, "A.java", NO_HOOKER_LAMBDA);
+
+        assertEquals(1, findings.size());
+    }
+
+    @Test
+    public void frameworkDiscoveryInstallOnlyUsedByScreenshotHooks() throws IOException {
+        List<SourceScan.Finding> findings = SourceScan.scan(
+                hooksSource(), Collections.singletonList(DISCOVERY_INSTALL_CALLSITE));
+
+        for (SourceScan.Finding finding : findings) {
+            assertEquals("框架类挂载例外只允许 ScreenShotHooks 使用：" + finding,
+                    "ScreenShotHooks.java", finding.file);
+        }
+        assertFalse("必须至少存在 PV-01 的发现入口调用", findings.isEmpty());
     }
 
     /** 测试从模块目录（app/）或仓库根目录运行都能定位源码。 */

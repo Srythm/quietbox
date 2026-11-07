@@ -20,11 +20,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -69,7 +72,9 @@ public final class AbTestHooks {
                             AnchorKeys.CONFIG_CENTER_GET_VALUE, true),
                     stringHook(module, f));
 
-            installContextCapture(module, cl, f);
+            // 不再 hook android.app.Application#onCreate（框架类黑名单）：
+            // AbRuntime.context() 通过 ActivityThread.currentApplication() 反射取
+            // Application Context，refresh 每 3 秒重试，无需依赖框架类挂载点。
             AbRuntime.start(module);
             HookState.note(f, "AB 面板已挂载");
         } catch (Throwable t) {
@@ -80,22 +85,25 @@ public final class AbTestHooks {
 
     /** oq.h 的返回值是已经按 Type 解析好的对象；按 AbTest 声明的类型转换强制值。 */
     private static XposedInterface.Hooker valueHook(XposedModule module, Feature f) {
-        return chain -> {
-            Object result = chain.proceed();
-            try {
-                Object arg = chain.getArg(0);
-                if (arg instanceof String) {
-                    String key = (String) arg;
-                    AbRuntime.observe(key, result);
-                    AbTest forced = AbRuntime.override(key);
-                    if (forced != null) {
-                        return coerce(forced, result);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object result = chain.proceed();
+                try {
+                    Object arg = chain.getArg(0);
+                    if (arg instanceof String) {
+                        String key = (String) arg;
+                        AbRuntime.observe(key, result);
+                        AbTest forced = AbRuntime.override(key);
+                        if (forced != null) {
+                            return coerce(forced, result);
+                        }
                     }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " ab intercept error", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " ab intercept error", t);
+                return result;
             }
-            return result;
         };
     }
 
@@ -105,25 +113,28 @@ public final class AbTestHooks {
      * 会静默回落到默认值。
      */
     private static XposedInterface.Hooker stringHook(XposedModule module, Feature f) {
-        return chain -> {
-            Object result = chain.proceed();
-            try {
-                Object arg = chain.getArg(0);
-                if (arg instanceof String) {
-                    String key = (String) arg;
-                    AbRuntime.observe(key, result);
-                    AbTest forced = AbRuntime.override(key);
-                    if (forced != null) {
-                        String literal = forced.forcedLiteral();
-                        if (literal != null) {
-                            return literal;
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object result = chain.proceed();
+                try {
+                    Object arg = chain.getArg(0);
+                    if (arg instanceof String) {
+                        String key = (String) arg;
+                        AbRuntime.observe(key, result);
+                        AbTest forced = AbRuntime.override(key);
+                        if (forced != null) {
+                            String literal = forced.forcedLiteral();
+                            if (literal != null) {
+                                return literal;
+                            }
                         }
                     }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " config intercept error", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " config intercept error", t);
+                return result;
             }
-            return result;
         };
     }
 
@@ -154,26 +165,6 @@ public final class AbTestHooks {
         return target;
     }
 
-    /**
-     * 目标进程里没有现成的 Application Context 入口，用 ActivityThread 反射；
-     * 同时挂 Application#onCreate 兜底（onPackageReady 早于它执行）。
-     */
-    private static void installContextCapture(XposedModule module, ClassLoader cl, Feature f) {
-        try {
-            Class<?> app = Class.forName("android.app.Application", false, cl);
-            Method onCreate = HookKit.findMethod(module, f, app, "onCreate");
-            HookKit.install(module, f, "Application#onCreate", onCreate, chain -> {
-                Object self = chain.getThisObject();
-                if (self instanceof Context) {
-                    AbRuntime.setContext((Context) self);
-                }
-                return chain.proceed();
-            });
-        } catch (Throwable t) {
-            HookKit.warn(module, f.id + " context capture skipped: " + t);
-        }
-    }
-
     /** 运行时状态与后台刷新/回传。 */
     static final class AbRuntime {
 
@@ -185,12 +176,26 @@ public final class AbTestHooks {
         private static final int MAX_KEYS = 800;
         private static final int MAX_BATCH = 200;
 
-        /** provider 调用放在独立线程池：模块 App 卡住时最多阻塞 2 秒，不拖死 3 秒刷新线程。 */
-        private static final ExecutorService CALL_POOL = Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r, "QuietBox-AB-call");
-            t.setDaemon(true);
-            return t;
-        });
+        /**
+         * provider 调用放在独立线程池：模块 App 卡住时最多阻塞 2 秒，不拖死 3 秒刷新线程。
+         *
+         * <p>与 {@link Report} 相同：单线程 + 容量 1 的有界队列 + AbortPolicy。
+         * binder 调用不响应 cancel(true)，用无界缓存池会在模块 App 卡死时每 3 秒新建
+         * 一个永久阻塞的线程；有界池最多占住 1 个线程、排队 1 个任务，后续提交直接拒绝。
+         */
+        private static final ExecutorService CALL_POOL = newCallPool();
+
+        /** 包级可见：由 AbTestHooksTest 锁定池形状与拒绝行为。 */
+        static ExecutorService newCallPool() {
+            return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(1),
+                    r -> {
+                        Thread t = new Thread(r, "QuietBox-AB-call");
+                        t.setDaemon(true);
+                        return t;
+                    },
+                    new ThreadPoolExecutor.AbortPolicy());
+        }
 
         private static volatile boolean sEnabled;
         private static volatile boolean sStarted;
@@ -228,10 +233,6 @@ public final class AbTestHooks {
                 } catch (Throwable ignored) {
                 }
             }, 2, 3, TimeUnit.SECONDS);
-        }
-
-        static void setContext(Context context) {
-            sContext = context;
         }
 
         static AbTest override(String key) {
@@ -308,9 +309,15 @@ public final class AbTestHooks {
 
         /** provider 调用最多等 2 秒；超时/异常一律返回 null，由调用方走兜底。 */
         private static Bundle callProvider(Context ctx, String method, Bundle extras) {
-            Future<Bundle> f = CALL_POOL.submit(() -> ctx.getContentResolver().call(
-                    android.net.Uri.parse("content://" + AbReportProvider.AUTHORITY),
-                    method, null, extras));
+            Future<Bundle> f;
+            try {
+                f = CALL_POOL.submit(() -> ctx.getContentResolver().call(
+                        android.net.Uri.parse("content://" + AbReportProvider.AUTHORITY),
+                        method, null, extras));
+            } catch (RejectedExecutionException e) {
+                // 上一次 provider 调用还卡在 binder 里：直接按失败处理，不再堆积任务。
+                return null;
+            }
             try {
                 return f.get(2, TimeUnit.SECONDS);
             } catch (TimeoutException e) {

@@ -119,6 +119,52 @@ public class AbConfigStoreTest {
     }
 
     @Test
+    public void panelWriteCarriesConfigVersionInSameCommit() throws Exception {
+        FakeSharedPreferences remote = new FakeSharedPreferences();
+        AbConfigStore store = new AbConfigStore(remote, new FakeSharedPreferences(),
+                new FakeSharedPreferences());
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertTrue(store.setPanelEnabled(true, committed -> done.countDown()));
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertEquals("面板开关写入必须在同一次 commit 内带上 config_version",
+                Config.CURRENT_CONFIG_VERSION,
+                remote.getInt(Config.KEY_CONFIG_VERSION, -1));
+        assertEquals("版本标记与开关值共用一次 commit（不能分两次写）",
+                1, remote.commitCount());
+    }
+
+    @Test
+    public void forcedWriteCarriesConfigVersionInSameCommit() throws Exception {
+        FakeSharedPreferences remote = new FakeSharedPreferences();
+        AbConfigStore store = new AbConfigStore(remote, new FakeSharedPreferences(),
+                new FakeSharedPreferences());
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertTrue(store.setForced("k", true, "1", committed -> done.countDown()));
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertEquals("AB 强开写入必须在同一次 commit 内带上 config_version",
+                Config.CURRENT_CONFIG_VERSION,
+                remote.getInt(Config.KEY_CONFIG_VERSION, -1));
+        assertEquals("版本标记与覆盖表共用一次 commit（不能分两次写）",
+                1, remote.commitCount());
+    }
+
+    @Test
+    public void failedWriteDoesNotLeaveConfigVersionBehind() throws Exception {
+        FakeSharedPreferences remote = new FakeSharedPreferences();
+        remote.setCommitResult(false);
+        AbConfigStore store = new AbConfigStore(remote, new FakeSharedPreferences(),
+                new FakeSharedPreferences());
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertTrue(store.setPanelEnabled(true, committed -> done.countDown()));
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertFalse("commit 失败时不能出现单独写入的版本标记",
+                remote.contains(Config.KEY_CONFIG_VERSION));
+    }
+
+    @Test
     public void panelWriteRejectedWhenRemoteUnavailable() {
         FakeSharedPreferences report = new FakeSharedPreferences();
         AbConfigStore store = new AbConfigStore(null, new FakeSharedPreferences(), report);

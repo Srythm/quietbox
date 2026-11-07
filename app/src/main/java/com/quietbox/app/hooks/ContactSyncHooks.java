@@ -106,22 +106,25 @@ final class ContactSyncHooks {
     private static XposedInterface.Hooker completeThenInvoke(XposedModule module, Feature f,
                                                              String detail,
                                                              String callbackMethod) {
-        return chain -> {
-            try {
-                Object callback = chain.getArg(2);
-                if (callback != null) {
-                    try {
-                        invokeZeroArg(callback, callbackMethod);
-                    } catch (Throwable t) {
-                        HookKit.error(module, f.id + " " + callbackMethod
-                                + " invoke failed " + detail, t);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object callback = chain.getArg(2);
+                    if (callback != null) {
+                        try {
+                            invokeZeroArg(callback, callbackMethod);
+                        } catch (Throwable t) {
+                            HookKit.error(module, f.id + " " + callbackMethod
+                                    + " invoke failed " + detail, t);
+                        }
                     }
+                    HookKit.hit(module, f, detail);
+                    return null;
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error " + detail, t);
+                    return null;
                 }
-                HookKit.hit(module, f, detail);
-                return null;
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error " + detail, t);
-                return null;
             }
         };
     }

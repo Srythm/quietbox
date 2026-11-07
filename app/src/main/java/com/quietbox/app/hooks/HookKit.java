@@ -311,6 +311,21 @@ final class HookKit {
         return null;
     }
 
+    /**
+     * 框架类黑名单（DESIGN §14 第 6 条）：这些类由 bootclasspath / 框架提供，
+     * hook 它们会崩目标进程。所有常规安装入口必须拒绝。
+     */
+    static boolean isFrameworkClass(String name) {
+        if (name == null) {
+            return true;
+        }
+        return name.startsWith("android.")
+                || name.startsWith("java.")
+                || name.startsWith("dalvik.")
+                || name.startsWith("androidx.")
+                || name.startsWith("kotlin.");
+    }
+
     static boolean install(XposedModule module, Feature f, String label, @Nullable Method m,
                            XposedInterface.Hooker hooker) {
         return install(module, f, label, (java.lang.reflect.Executable) m, hooker,
@@ -332,13 +347,57 @@ final class HookKit {
     /**
      * 按指定异常模式安装。默认 PROTECTIVE；只有需要把异常传给宿主调用方
      * （例如 EX-01 让 RxJava 走 onError）的 hook 才使用 PASSTHROUGH。
+     *
+     * <p>框架类豁免白名单紧接其后：DESIGN §14 第 6 条要求硬拒绝，但 PV-01 的检测器
+     * 类名每版都变（9.49.1 idc.d1/j1 → 9.50.0 xec.d1/j1），没有任何业务类挂载点能替代
+     * {@code ContentResolver#registerContentObserver} 这条注册通道。豁免范围收窄到
+     * 这一个具体类：除它之外的框架类（android./java./dalvik./androidx./kotlin.）
+     * 即使走 {@link #installForDiscovery} 也一律拒绝。该例外只允许 ScreenShotHooks
+     * 使用（HookKitSourceScanTest 锁定调用点），并在 CHANGELOG「未发布」段记录。
      */
+    private static final String DISCOVERY_FRAMEWORK_CLASS =
+            "android.content.ContentResolver";
+
+    /** 仅当目标类恰为 {@link #DISCOVERY_FRAMEWORK_CLASS} 时允许豁免。 */
+    static boolean isDiscoveryFrameworkClass(String name) {
+        return DISCOVERY_FRAMEWORK_CLASS.equals(name);
+    }
+
     static boolean install(XposedModule module, Feature f, String label,
                            @Nullable java.lang.reflect.Executable m,
                            XposedInterface.Hooker hooker, XposedInterface.ExceptionMode mode) {
+        return install(module, f, label, m, hooker, mode, null);
+    }
+
+    /**
+     * 运行时发现的唯一框架类挂载入口：只接受
+     * {@value #DISCOVERY_FRAMEWORK_CLASS}，其余框架类仍走黑名单拒绝。
+     */
+    static boolean installForDiscovery(XposedModule module, Feature f, String label,
+                                       @Nullable Method m, XposedInterface.Hooker hooker) {
+        String declaring = m == null ? null : m.getDeclaringClass().getName();
+        String exemption = isDiscoveryFrameworkClass(declaring) ? declaring : null;
+        return install(module, f, label, (java.lang.reflect.Executable) m, hooker,
+                XposedInterface.ExceptionMode.PROTECTIVE, exemption);
+    }
+
+    /**
+     * @param frameworkExemption 唯一允许的框架类名；null 表示不豁免任何框架类。
+     *                           只有 {@link #installForDiscovery} 会传入非 null 值。
+     */
+    private static boolean install(XposedModule module, Feature f, String label,
+                                   @Nullable java.lang.reflect.Executable m,
+                                   XposedInterface.Hooker hooker, XposedInterface.ExceptionMode mode,
+                                   @Nullable String frameworkExemption) {
         if (m == null) {
             warn(module, f.id + " skip: no executable for " + label);
             HookState.markNotFound(f, "挂载点为空 " + label);
+            return false;
+        }
+        String declaring = m.getDeclaringClass().getName();
+        if (isFrameworkClass(declaring) && !declaring.equals(frameworkExemption)) {
+            warn(module, f.id + " skip: framework class refused " + declaring);
+            HookState.markNotFound(f, "框架类黑名单 " + declaring);
             return false;
         }
         try {
@@ -356,33 +415,53 @@ final class HookKit {
         }
     }
 
+    /**
+     * 命中计数每次都累加；日志按计数采样（前 5 次 + 每 100 次），避免高频 hook
+     * 刷爆 logcat、拖慢宿主。与 QuietMap/TiebaQuiet 的口径一致。
+     *
+     * <p>包级可见：由 HookKitTest 锁定采样窗口。
+     */
+    static boolean shouldLogHit(long count) {
+        return count <= 5 || count % 100 == 0;
+    }
+
     static void hit(XposedModule module, Feature f, String detail) {
-        HookState.hit(f);
-        module.log(Log.INFO, TAG, f.id + " hit " + detail);
+        String logLine = f.id + " hit " + detail;
+        long count = HookState.hit(f);
+        if (shouldLogHit(count)) {
+            module.log(Log.INFO, TAG, logLine);
+        }
     }
 
     /** void 方法：不 proceed 即原方法体不执行。 */
     static XposedInterface.Hooker skipVoid(XposedModule module, Feature f, String detail) {
-        return chain -> {
-            try {
-                hit(module, f, detail);
-                return null;
-            } catch (Throwable t) {
-                error(module, f.id + " intercept error " + detail, t);
-                return chain.proceed();
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    hit(module, f, detail);
+                    return null;
+                } catch (Throwable t) {
+                    error(module, f.id + " intercept error " + detail, t);
+                    return chain.proceed();
+                }
             }
         };
     }
 
     /** 布尔方法：直接给常量，不 proceed。 */
-    static XposedInterface.Hooker constBool(XposedModule module, Feature f, String detail, boolean value) {
-        return chain -> {
-            try {
-                hit(module, f, detail);
-                return value ? Boolean.TRUE : Boolean.FALSE;
-            } catch (Throwable t) {
-                error(module, f.id + " intercept error " + detail, t);
-                return chain.proceed();
+    static XposedInterface.Hooker constBool(XposedModule module, Feature f, String detail,
+                                            boolean value) {
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    hit(module, f, detail);
+                    return value ? Boolean.TRUE : Boolean.FALSE;
+                } catch (Throwable t) {
+                    error(module, f.id + " intercept error " + detail, t);
+                    return chain.proceed();
+                }
             }
         };
     }

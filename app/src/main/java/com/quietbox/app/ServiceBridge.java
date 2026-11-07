@@ -3,6 +3,10 @@ package com.quietbox.app;
 import android.content.Context;
 import android.util.Log;
 
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.github.libxposed.service.XposedService;
@@ -22,6 +26,17 @@ public final class ServiceBridge {
     private static final String AUTHORITY_SUFFIX = ".XposedService";
 
     private static final AtomicReference<XposedService> sService = new AtomicReference<>();
+
+    /**
+     * poke 是同步 Provider 调用：bind() 由 MainActivity 在 onCreate 主线程调用，
+     * 必须转到后台，避免框架卡顿时阻塞首帧。
+     */
+    private static final ExecutorService POKE_EXECUTOR =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "qb-service-poke");
+                t.setDaemon(true);
+                return t;
+            });
 
     private static boolean sListenerRegistered;
 
@@ -75,7 +90,25 @@ public final class ServiceBridge {
         });
         // 框架可能在 registerListener 之前就已完成投递，此时不会再有回调，补一次主动取。
         if (sService.get() == null) {
-            poke(context);
+            final Context app = context.getApplicationContext() != null
+                    ? context.getApplicationContext() : context;
+            schedulePoke(POKE_EXECUTOR, () -> poke(app));
+        }
+    }
+
+    /**
+     * 把补投任务交给后台执行器，调用线程只负责入队、绝不同步等待。
+     * 包级可见：由 ServiceBridgeTest 锁定「bind 返回前不执行 poke」。
+     *
+     * @return false = 执行器拒绝（线程池已关闭等），调用方不需要补偿
+     */
+    static boolean schedulePoke(Executor executor, Runnable poke) {
+        try {
+            executor.execute(poke);
+            return true;
+        } catch (RejectedExecutionException e) {
+            Log.w(TAG, "poke scheduling rejected", e);
+            return false;
         }
     }
 

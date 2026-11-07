@@ -84,4 +84,54 @@ public class WriteGateTest {
         assertEquals("确认值随 clear 一并丢弃，回到兜底值", Boolean.FALSE,
                 gate.rollback("k", false));
     }
+
+    // ------------------------------------------------ 刷新播种 / 在途状态（F-046）
+
+    @Test
+    public void seedProvidesBaselineForFirstFailure() {
+        WriteGate gate = new WriteGate();
+        // 页面打开时读到真实落盘值 false；随后两次快速写入都失败。
+        gate.seed("k", false);
+        long seq = gate.begin("k");
+        assertTrue(gate.onResult("k", seq, false, true));
+
+        assertEquals("两次快速写入都失败时，应回退到刷新时播种的落盘值，"
+                        + "而不是第二次写入前的乐观值",
+                Boolean.FALSE, gate.rollback("k", true));
+    }
+
+    @Test
+    public void seedNeverOverwritesConfirmedValue() {
+        WriteGate gate = new WriteGate();
+        long seq = gate.begin("k");
+        assertTrue(gate.onResult("k", seq, true, true));
+
+        // 之后的刷新会再次播种；确认值优先，不能被尚未完成的回读覆盖。
+        gate.seed("k", false);
+        assertEquals("确认落盘的 true 必须优先于后续快照",
+                Boolean.TRUE, gate.rollback("k", false));
+    }
+
+    @Test
+    public void pendingTracksLatestWriteOnly() {
+        WriteGate gate = new WriteGate();
+        long first = gate.begin("k");
+        assertTrue("刚入队的写入必须标记为在途", gate.isPending("k"));
+
+        long second = gate.begin("k");
+        assertFalse("被更新写入取代的旧结果不能清除在途标记",
+                gate.onResult("k", first, true, true));
+        assertTrue("第二次写入仍在途", gate.isPending("k"));
+
+        assertTrue(gate.onResult("k", second, false, false));
+        assertFalse("最新写入返回后不再有在途标记", gate.isPending("k"));
+    }
+
+    @Test
+    public void clearDropsPendingState() {
+        WriteGate gate = new WriteGate();
+        gate.begin("k");
+        gate.clear();
+        assertFalse("view 销毁后不得再因旧在途标记跳过刷新", gate.isPending("k"));
+    }
 }

@@ -186,18 +186,29 @@ final class AbConfigStore {
         }
     }
 
+    /**
+     * 与 {@link ConfigStore#put} 一致：开关值与 config_version 必须同一次 commit，
+     * 不能出现「新值已落盘、版本标记还缺失/停在旧值」的窗口。
+     */
     private static boolean commitBoolean(SharedPreferences sp, String key, boolean value) {
         try {
-            return sp.edit().putBoolean(key, value).commit();
+            return sp.edit()
+                    .putBoolean(key, value)
+                    .putInt(Config.KEY_CONFIG_VERSION, Config.CURRENT_CONFIG_VERSION)
+                    .commit();
         } catch (Throwable t) {
             Log.w(TAG, "write failed: " + key, t);
             return false;
         }
     }
 
+    /** AB 覆盖表写入同样属于配置写入，必须与开关值共用同一条版本标记规则。 */
     private static boolean commitString(SharedPreferences sp, String key, String value) {
         try {
-            return sp.edit().putString(key, value).commit();
+            return sp.edit()
+                    .putString(key, value)
+                    .putInt(Config.KEY_CONFIG_VERSION, Config.CURRENT_CONFIG_VERSION)
+                    .commit();
         } catch (Throwable t) {
             Log.w(TAG, "write failed: " + key, t);
             return false;

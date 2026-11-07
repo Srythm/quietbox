@@ -1,5 +1,6 @@
 package com.quietbox.app.hooks;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -30,6 +31,21 @@ public class ExtAppHooksTest {
 
     /** 同名替身的子类：isExternalWebView 沿父类链匹配名字，子类必须命中。 */
     static class FakeExtWebView extends com.xingin.xywebview.activity.ExternalWebViewActivityV2 {
+    }
+
+    /** 模拟 WebView 的 MutableContextWrapper：mockable android.jar 不保存 base。 */
+    static class FakeMutableWrapper extends android.content.MutableContextWrapper {
+        private final android.content.Context mBase;
+
+        FakeMutableWrapper(android.content.Context base) {
+            super(base);
+            mBase = base;
+        }
+
+        @Override
+        public android.content.Context getBaseContext() {
+            return mBase;
+        }
     }
 
     /** 形状正确的替身：b(Uri, Context, AdRedirectInfo, boolean, boolean)。 */
@@ -80,6 +96,35 @@ public class ExtAppHooksTest {
             assertFalse("scheme=" + scheme + " 在白名单内必须放行",
                     ExtAppHooks.shouldBlock(FakeExtWebView.class, scheme, adInfo));
         }
+    }
+
+    @Test
+    public void wrappedContextIsUnwrappedLikeHost() {
+        // 宿主 zyd.i0.b 先解包 MutableContextWrapper 再判 ExternalWebViewActivityV2；
+        // WebView 预热路径（uxd.d）传进来的正是包装 Context。模块必须同口径解包，
+        // 否则广告落地页会被判成普通页面、Path B 放行。
+        FakeExtWebView activity = new FakeExtWebView();
+        // 单测的 mockable android.jar 里 MutableContextWrapper 不保存 base，这里用
+        // 子类显式返回，模拟真实 WebView 包装器。
+        android.content.MutableContextWrapper wrapper = new FakeMutableWrapper(activity);
+
+        assertFalse("前置条件：不解包时包装类会被判成普通页面（这就是旧缺陷）",
+                ExtAppHooks.shouldBlock(wrapper.getClass(), "taobao", new AdRedirectInfo()));
+        assertEquals("解包后必须拿回真实 Activity 类",
+                FakeExtWebView.class, ExtAppHooks.unwrapContext(wrapper).getClass());
+        assertTrue("包装 Context 的广告落地页也必须拦截三方 scheme",
+                ExtAppHooks.shouldBlock(
+                        ExtAppHooks.unwrapContext(wrapper).getClass(),
+                        "taobao", new AdRedirectInfo()));
+    }
+
+    @Test
+    public void unwrapContextLeavesPlainContextUntouched() {
+        FakeExtWebView activity = new FakeExtWebView();
+        org.junit.Assert.assertSame("非包装 Context 必须原样返回",
+                activity, ExtAppHooks.unwrapContext(activity));
+        org.junit.Assert.assertNull("null 不得抛异常",
+                ExtAppHooks.unwrapContext(null));
     }
 
     @Test

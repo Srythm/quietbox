@@ -1,5 +1,7 @@
 package com.quietbox.app.hooks;
 
+import android.content.Context;
+import android.content.MutableContextWrapper;
 import android.net.Uri;
 
 import com.quietbox.app.Feature;
@@ -83,21 +85,43 @@ final class ExtAppHooks {
     }
 
     private static XposedInterface.Hooker convergeHook(XposedModule module, Feature f) {
-        return chain -> {
-            try {
-                Object uri = chain.getArg(0);
-                Object ctx = chain.getArg(1);
-                if (uri instanceof Uri && ctx != null
-                        && shouldBlock(ctx.getClass(),
-                                ((Uri) uri).getScheme(), chain.getArg(2))) {
-                    HookKit.hit(module, f, "j9e.i0#b blocked scheme=" + ((Uri) uri).getScheme());
-                    return Boolean.FALSE;
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object uri = chain.getArg(0);
+                    Object ctx = unwrapContext(chain.getArg(1));
+                    if (uri instanceof Uri && ctx != null
+                            && shouldBlock(ctx.getClass(),
+                                    ((Uri) uri).getScheme(), chain.getArg(2))) {
+                        HookKit.hit(module, f, "j9e.i0#b blocked scheme=" + ((Uri) uri).getScheme());
+                        return Boolean.FALSE;
+                    }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error j9e.i0#b", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error j9e.i0#b", t);
+                return chain.proceed();
             }
-            return chain.proceed();
         };
+    }
+
+    /**
+     * 宿主 zyd.i0.b 先解包 {@link MutableContextWrapper} 再判断
+     * {@code instanceof ExternalWebViewActivityV2}；WebView 内部真实传进来的就是
+     * 包装过的 Context（uxd.d 预热时 setBaseContext），模块不解包会把广告落地页
+     * 误判成普通页面而放行。这里与宿主保持同一判定口径。
+     */
+    static Object unwrapContext(Object ctx) {
+        Object current = ctx;
+        // 只解 MutableContextWrapper（与宿主一致）；限制层数防御循环引用。
+        for (int i = 0; i < 4 && current instanceof MutableContextWrapper; i++) {
+            Context base = ((MutableContextWrapper) current).getBaseContext();
+            if (base == null || base == current) {
+                break;
+            }
+            current = base;
+        }
+        return current;
     }
 
     /**

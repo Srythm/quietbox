@@ -64,37 +64,40 @@ final class NoteUnavailableHooks {
     }
 
     private static XposedInterface.Hooker hook(XposedModule module, Feature f) {
-        return chain -> {
-            Object result;
-            try {
-                result = chain.proceed();
-            } catch (Throwable t) {
-                // 原方法自己失败，交给下游原有的错误处理。
-                throw t;
-            }
-            try {
-                if (!sDiagnosed) {
-                    sDiagnosed = true;
-                    HookKit.hit(module, f, "map observed result=" + className(result)
-                            + " modelType=" + modelType(feedOf(result)));
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object result;
+                try {
+                    result = chain.proceed();
+                } catch (Throwable t) {
+                    // 原方法自己失败，交给下游原有的错误处理。
+                    throw t;
                 }
-                if (!isErrorHolder(result)) {
+                try {
+                    if (!sDiagnosed) {
+                        sDiagnosed = true;
+                        HookKit.hit(module, f, "map observed result=" + className(result)
+                                + " modelType=" + modelType(feedOf(result)));
+                    }
+                    if (!isErrorHolder(result)) {
+                        return result;
+                    }
+                    Object repo = valueOfType(chain.getThisObject(), REPO);
+                    Object previous = repo == null ? null : valueOfType(repo, HOLDER);
+                    if (isUsableHolder(previous) && sameNote(previous, result)) {
+                        HookKit.hit(module, f, "restore cached holder");
+                        return previous;
+                    }
+                    HookKit.hit(module, f, "error feed -> offline path");
+                    // RxJava 会把它当成请求失败，走与断网相同的分支。
+                    throw new IOException("quietbox: note unavailable");
+                } catch (IOException io) {
+                    throw io;
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error", t);
                     return result;
                 }
-                Object repo = valueOfType(chain.getThisObject(), REPO);
-                Object previous = repo == null ? null : valueOfType(repo, HOLDER);
-                if (isUsableHolder(previous) && sameNote(previous, result)) {
-                    HookKit.hit(module, f, "restore cached holder");
-                    return previous;
-                }
-                HookKit.hit(module, f, "error feed -> offline path");
-                // RxJava 会把它当成请求失败，走与断网相同的分支。
-                throw new IOException("quietbox: note unavailable");
-            } catch (IOException io) {
-                throw io;
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error", t);
-                return result;
             }
         };
     }

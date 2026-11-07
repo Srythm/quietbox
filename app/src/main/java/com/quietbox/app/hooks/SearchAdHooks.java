@@ -47,30 +47,33 @@ final class SearchAdHooks {
     }
 
     private static XposedInterface.Hooker filterHook(XposedModule module, Feature f, Class<?> adClass) {
-        return chain -> {
-            // 先执行原方法：它自己抛的异常原样向上抛，不要在这里 proceed 第二次。
-            Object result = chain.proceed();
-            try {
-                if (result instanceof List) {
-                    List<?> src = (List<?>) result;
-                    List<Object> out = new ArrayList<>(src.size());
-                    int removed = 0;
-                    for (Object item : src) {
-                        if (item != null && adClass.isInstance(item)) {
-                            removed++;
-                        } else {
-                            out.add(item);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                // 先执行原方法：它自己抛的异常原样向上抛，不要在这里 proceed 第二次。
+                Object result = chain.proceed();
+                try {
+                    if (result instanceof List) {
+                        List<?> src = (List<?>) result;
+                        List<Object> out = new ArrayList<>(src.size());
+                        int removed = 0;
+                        for (Object item : src) {
+                            if (item != null && adClass.isInstance(item)) {
+                                removed++;
+                            } else {
+                                out.add(item);
+                            }
+                        }
+                        if (removed > 0) {
+                            HookKit.hit(module, f, "search ads removed=" + removed);
+                            return out;
                         }
                     }
-                    if (removed > 0) {
-                        HookKit.hit(module, f, "search ads removed=" + removed);
-                        return out;
-                    }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error ll0.g0#o", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error ll0.g0#o", t);
+                return result;
             }
-            return result;
         };
     }
 }

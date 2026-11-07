@@ -6,6 +6,7 @@ import com.quietbox.app.anchor.AnchorKeys;
 
 import java.lang.reflect.Method;
 
+import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
@@ -68,23 +69,26 @@ final class ForceSaveHooks {
             if (enable != null && type != null) {
                 final Method typeGetter = type;
                 boolean ok = HookKit.install(module, f, "FunctionSwitch#a(enable-download)",
-                        enable, chain -> {
-                            Object original = chain.proceed();
-                            try {
-                                Object self = chain.getThisObject();
-                                if (self != null) {
-                                    Object typeValue = typeGetter.invoke(self);
-                                    if (typeValue instanceof String
-                                            && shouldForceEnable((String) typeValue)) {
-                                        HookKit.hit(module, f,
-                                                "FunctionSwitch#a:" + typeValue);
-                                        return Boolean.TRUE;
+                        enable, new XposedInterface.Hooker() {
+                            @Override
+                            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                                Object original = chain.proceed();
+                                try {
+                                    Object self = chain.getThisObject();
+                                    if (self != null) {
+                                        Object typeValue = typeGetter.invoke(self);
+                                        if (typeValue instanceof String
+                                                && shouldForceEnable((String) typeValue)) {
+                                            HookKit.hit(module, f,
+                                                    "FunctionSwitch#a:" + typeValue);
+                                            return Boolean.TRUE;
+                                        }
                                     }
+                                } catch (Throwable t) {
+                                    HookKit.error(module, f.id + " FunctionSwitch#a error", t);
                                 }
-                            } catch (Throwable t) {
-                                HookKit.error(module, f.id + " FunctionSwitch#a error", t);
+                                return original;
                             }
-                            return original;
                         });
                 if (ok) {
                     installed++;

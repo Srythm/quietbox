@@ -4,10 +4,21 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.quietbox.app.Feature;
+import com.quietbox.app.HookState;
+
 import org.junit.Test;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import io.github.libxposed.api.XposedInterface;
+import io.github.libxposed.api.XposedModule;
 
 /**
  * LivePhotoWatermarkHooks 纯函数的 JVM 单测。
@@ -104,5 +115,71 @@ public class LivePhotoWatermarkHooksTest {
         int codeMods = code.getModifiers();
         assertTrue(Modifier.isStatic(codeMods));
         assertTrue((codeMods & (Modifier.PUBLIC | Modifier.PROTECTED | Modifier.PRIVATE)) == 0);
+    }
+
+    // -------------------------------------------------- 失效不能报成命中（F-051）
+
+    private static final class ChainFake {
+        final List<Object> args;
+        final AtomicInteger proceedCalls = new AtomicInteger();
+
+        ChainFake(Object... args) {
+            this.args = new ArrayList<>(Arrays.asList(args));
+        }
+
+        XposedInterface.Chain proxy() {
+            return (XposedInterface.Chain) Proxy.newProxyInstance(
+                    XposedInterface.class.getClassLoader(),
+                    new Class<?>[]{XposedInterface.Chain.class},
+                    (p, method, methodArgs) -> {
+                        if ("getArgs".equals(method.getName())) {
+                            return args;
+                        }
+                        if ("proceed".equals(method.getName())) {
+                            proceedCalls.incrementAndGet();
+                            return "proceeded";
+                        }
+                        return null;
+                    });
+        }
+    }
+
+    private static XposedModule newModule() {
+        XposedInterface base = (XposedInterface) Proxy.newProxyInstance(
+                XposedInterface.class.getClassLoader(),
+                new Class<?>[]{XposedInterface.class},
+                (proxy, method, args) -> null);
+        XposedModule module = new XposedModule() {
+        };
+        module.attachFramework(base, () -> {
+        });
+        return module;
+    }
+
+    @Test
+    public void entryHooker_doesNotReportHitWhenFieldsMissing() throws Throwable {
+        Feature f = Feature.LIVE_PHOTO_WATERMARK;
+        long before = HookState.hitCount(f);
+        ChainFake chain = new ChainFake("listener", new Object());
+
+        Object result = LivePhotoWatermarkHooks.entryHooker(newModule(), f)
+                .intercept(chain.proxy());
+
+        assertEquals("字段改名/缺失时 set=0，功能未生效不能报命中",
+                before, HookState.hitCount(f));
+        assertEquals("原参 proceed 一次", 1, chain.proceedCalls.get());
+        assertEquals("proceeded", result);
+    }
+
+    @Test
+    public void entryHooker_reportsHitOnlyWhenFlagsSet() throws Throwable {
+        Feature f = Feature.LIVE_PHOTO_WATERMARK;
+        long before = HookState.hitCount(f);
+        ChainFake chain = new ChainFake("listener", new Feedback());
+
+        LivePhotoWatermarkHooks.entryHooker(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("两个字段都置位后记一次命中", before + 1, HookState.hitCount(f));
+        assertEquals(1, chain.proceedCalls.get());
     }
 }

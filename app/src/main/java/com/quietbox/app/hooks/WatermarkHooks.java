@@ -9,6 +9,7 @@ import com.quietbox.app.anchor.AnchorKeys;
 import java.lang.reflect.Method;
 import java.util.List;
 
+import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
@@ -61,24 +62,7 @@ final class WatermarkHooks {
                     AnchorKeys.WATERMARK_COMPOSE, true);
             if (m != null) {
                 if (HookKit.install(module, f, "jm8.j#a(disableWaterMark=true)", m,
-                        chain -> {
-                            Object[] replaced = null;
-                            try {
-                                HookKit.hit(module, f, "jm8.j#a");
-                                List<Object> args = chain.getArgs();
-                                if (args.size() >= 6) {
-                                    replaced = args.toArray();
-                                    // 跳过主水印
-                                    replaced[4] = Boolean.TRUE;
-                                    // 跳过 AI 水印
-                                    replaced[5] = Boolean.TRUE;
-                                }
-                            } catch (Throwable t) {
-                                HookKit.error(module, f.id + " intercept error jm8.j#a", t);
-                            }
-                            // proceed 放在 try 外：原方法自己抛异常时不能再调一次。
-                            return replaced == null ? chain.proceed() : chain.proceed(replaced);
-                        })) {
+                        composeHooker(module, f))) {
                     installed++;
                     mainInstalled++;
                 }
@@ -108,6 +92,57 @@ final class WatermarkHooks {
         } else if (mainInstalled == 0) {
             HookState.markNotFound(f, "水印主链挂载点未找到（仅语义 getter 生效）");
         }
+    }
+
+    /**
+     * 画布合成 hooker：只有参数形状匹配并真正改写成功后才记 hit；
+     * 参数个数不符时原样 proceed，水印仍会绘制，不能报成命中（F-051）。
+     */
+    static XposedInterface.Hooker composeHooker(XposedModule module, Feature f) {
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object[] replaced = null;
+                try {
+                    List<Object> args = chain.getArgs();
+                    if (args.size() >= 6) {
+                        replaced = args.toArray();
+                        // 跳过主水印
+                        replaced[4] = Boolean.TRUE;
+                        // 跳过 AI 水印
+                        replaced[5] = Boolean.TRUE;
+                        HookKit.hit(module, f, "jm8.j#a");
+                    }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error jm8.j#a", t);
+                }
+                // proceed 放在 try 外：原方法自己抛异常时不能再调一次。
+                return replaced == null ? chain.proceed() : chain.proceed(replaced);
+            }
+        };
+    }
+
+    /**
+     * 保存入口 hooker：只有 11 参形状被 {@link #applyWatermarkFlags} 接受并
+     * 实际置位后才记 hit；形状不符时原参 proceed，不能报成命中（F-051）。
+     */
+    static XposedInterface.Hooker saveEntryHooker(XposedModule module, Feature f) {
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object[] replaced = null;
+                try {
+                    List<Object> args = chain.getArgs();
+                    replaced = applyWatermarkFlags(args.toArray());
+                    if (replaced != null) {
+                        HookKit.hit(module, f, "jm8.i#i");
+                    }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error jm8.i#i", t);
+                }
+                return replaced == null ? chain.proceed() : chain.proceed(replaced);
+            }
+        };
     }
 
     /**
@@ -163,17 +198,7 @@ final class WatermarkHooks {
                 return 0;
             }
             return HookKit.install(module, f, "jm8.i#i(disableWaterMark=true)", m,
-                    chain -> {
-                        Object[] replaced = null;
-                        try {
-                            HookKit.hit(module, f, "jm8.i#i");
-                            List<Object> args = chain.getArgs();
-                            replaced = applyWatermarkFlags(args.toArray());
-                        } catch (Throwable t) {
-                            HookKit.error(module, f.id + " intercept error jm8.i#i", t);
-                        }
-                        return replaced == null ? chain.proceed() : chain.proceed(replaced);
-                    }) ? 1 : 0;
+                    saveEntryHooker(module, f)) ? 1 : 0;
         } catch (Throwable t) {
             HookKit.warn(module, f.id + " skip: anchor jm8.i#i " + t);
             return 0;

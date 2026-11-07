@@ -6,10 +6,22 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import com.quietbox.app.Feature;
+import com.quietbox.app.HookState;
+
 import org.junit.Test;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import io.github.libxposed.api.XposedInterface;
+import io.github.libxposed.api.XposedModule;
 
 /**
  * WatermarkHooks.applyWatermarkFlags 的 JVM 单测。
@@ -107,5 +119,107 @@ public class WatermarkHooksTest {
         assertTrue(Modifier.isStatic(mods));
         assertTrue("应保持 package-private，供同包测试直接调用",
                 (mods & (Modifier.PUBLIC | Modifier.PROTECTED | Modifier.PRIVATE)) == 0);
+    }
+
+    // -------------------------------------------------- 命中上报必须反映真实结果（F-051）
+
+    /** 记录 proceed 次数与实际入参的 Chain 替身。 */
+    private static final class ChainFake {
+        final List<Object> args;
+        final AtomicInteger proceedCalls = new AtomicInteger();
+        final AtomicReference<Object[]> proceededArgs = new AtomicReference<>();
+
+        ChainFake(Object... args) {
+            this.args = new ArrayList<>(Arrays.asList(args));
+        }
+
+        XposedInterface.Chain proxy() {
+            return (XposedInterface.Chain) Proxy.newProxyInstance(
+                    XposedInterface.class.getClassLoader(),
+                    new Class<?>[]{XposedInterface.Chain.class},
+                    (p, method, methodArgs) -> {
+                        if ("getArgs".equals(method.getName())) {
+                            return args;
+                        }
+                        if ("proceed".equals(method.getName())) {
+                            proceedCalls.incrementAndGet();
+                            if (methodArgs != null && methodArgs.length == 1
+                                    && methodArgs[0] instanceof Object[]) {
+                                proceededArgs.set((Object[]) methodArgs[0]);
+                            }
+                            return "proceeded";
+                        }
+                        return null;
+                    });
+        }
+    }
+
+    private static XposedModule newModule() {
+        XposedInterface base = (XposedInterface) Proxy.newProxyInstance(
+                XposedInterface.class.getClassLoader(),
+                new Class<?>[]{XposedInterface.class},
+                (proxy, method, args) -> null);
+        XposedModule module = new XposedModule() {
+        };
+        module.attachFramework(base, () -> {
+        });
+        return module;
+    }
+
+    @Test
+    public void composeHooker_doesNotReportHitWhenShapeMismatch() throws Throwable {
+        Feature f = Feature.WATERMARK_POLICY;
+        long before = HookState.hitCount(f);
+        ChainFake chain = new ChainFake("a", "b", "c", "d", "e");
+
+        Object result = WatermarkHooks.composeHooker(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("参数形状不符时水印仍会绘制，不能报命中",
+                before, HookState.hitCount(f));
+        assertEquals("形状不符必须原参 proceed 一次", 1, chain.proceedCalls.get());
+        assertEquals("proceeded", result);
+    }
+
+    @Test
+    public void composeHooker_reportsHitOnlyAfterFlagsApplied() throws Throwable {
+        Feature f = Feature.WATERMARK_POLICY;
+        long before = HookState.hitCount(f);
+        ChainFake chain = new ChainFake("a", "b", "c", "d", "e", Boolean.FALSE);
+
+        WatermarkHooks.composeHooker(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("真正置位后才允许记一次命中", before + 1, HookState.hitCount(f));
+        assertEquals(1, chain.proceedCalls.get());
+        assertEquals(Boolean.TRUE, chain.proceededArgs.get()[4]);
+        assertEquals(Boolean.TRUE, chain.proceededArgs.get()[5]);
+    }
+
+    @Test
+    public void saveEntryHooker_doesNotReportHitWhenArityMismatch() throws Throwable {
+        Feature f = Feature.WATERMARK_POLICY;
+        long before = HookState.hitCount(f);
+        ChainFake chain = new ChainFake("a", "b", "c", "d", "e", Boolean.FALSE);
+
+        WatermarkHooks.saveEntryHooker(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("非 11 参重载走原参、水印照绘，不能报命中",
+                before, HookState.hitCount(f));
+        assertEquals(1, chain.proceedCalls.get());
+        assertNull("形状不符时不得传改写入参", chain.proceededArgs.get());
+    }
+
+    @Test
+    public void saveEntryHooker_reportsHitAfterFlagsApplied() throws Throwable {
+        Feature f = Feature.WATERMARK_POLICY;
+        long before = HookState.hitCount(f);
+        ChainFake chain = new ChainFake(elevenArgs());
+
+        WatermarkHooks.saveEntryHooker(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("11 参形状真正置位后才允许记一次命中",
+                before + 1, HookState.hitCount(f));
+        assertEquals(1, chain.proceedCalls.get());
+        assertEquals(Boolean.TRUE, chain.proceededArgs.get()[5]);
+        assertEquals(Boolean.TRUE, chain.proceededArgs.get()[10]);
     }
 }

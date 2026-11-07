@@ -31,4 +31,57 @@ public class AbTestFragmentTest {
         assertFalse(AbTestFragment.mayMirrorPanelEnabled(false, false));
         assertFalse(AbTestFragment.mayMirrorPanelEnabled(true, false));
     }
+
+    @Test
+    public void unchangedReportAndTimestampDoNotRedraw() {
+        java.util.Map<String, String> report = new java.util.HashMap<>();
+        report.put("andr_a", "1");
+        assertFalse("探测值与回传时间都没变时不应重建列表",
+                AbTestFragment.otherReportChanged(report, 1000L, report, 1000L));
+    }
+
+    @Test
+    public void newProbeValueTriggersRedraw() {
+        java.util.Map<String, String> rendered = new java.util.HashMap<>();
+        rendered.put("andr_a", "1");
+        java.util.Map<String, String> latest = new java.util.HashMap<>(rendered);
+        latest.put("andr_b", "2");
+        assertTrue("宿主回传了新 key 时必须刷新「其他」区",
+                AbTestFragment.otherReportChanged(rendered, 1000L, latest, 1000L));
+        latest = new java.util.HashMap<>(rendered);
+        latest.put("andr_a", "9");
+        assertTrue("已收录 key 的值变化也必须刷新",
+                AbTestFragment.otherReportChanged(rendered, 1000L, latest, 1000L));
+    }
+
+    @Test
+    public void newReportTimestampTriggersRedraw() {
+        java.util.Map<String, String> report = new java.util.HashMap<>();
+        report.put("andr_a", "1");
+        assertTrue("探测值相同但回传时间变化时，时间戳也必须更新",
+                AbTestFragment.otherReportChanged(report, 1000L, report, 4000L));
+    }
+
+    // ------------------------------------------------------------ CSV 公式注入
+
+    @Test
+    public void csvNeutralizesFormulaStartingValues() {
+        // 探测值来自宿主 AB 下发，AbReportProvider.validValue 只拒控制字符，
+        // 放行 = + - @；导出后 Excel/WPS 会把它们当公式执行。
+        org.junit.Assert.assertEquals("'=cmd|'/c calc'!A0",
+                AbTestFragment.esc("=cmd|'/c calc'!A0"));
+        org.junit.Assert.assertEquals("'+1+1", AbTestFragment.esc("+1+1"));
+        org.junit.Assert.assertEquals("'-1+1", AbTestFragment.esc("-1+1"));
+        org.junit.Assert.assertEquals("'@SUM(A1:A2)", AbTestFragment.esc("@SUM(A1:A2)"));
+        org.junit.Assert.assertEquals("'\t=1", AbTestFragment.esc("\t=1"));
+    }
+
+    @Test
+    public void csvKeepsOrdinaryValuesAndQuotingBehavior() {
+        org.junit.Assert.assertEquals("plain", AbTestFragment.esc("plain"));
+        org.junit.Assert.assertEquals("\"a,b\"", AbTestFragment.esc("a,b"));
+        org.junit.Assert.assertEquals("\"say \"\"hi\"\"\"", AbTestFragment.esc("say \"hi\""));
+        org.junit.Assert.assertEquals("", AbTestFragment.esc(null));
+        org.junit.Assert.assertEquals("x", AbTestFragment.neutralizeFormula("x"));
+    }
 }

@@ -10,6 +10,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
 
+import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
@@ -106,25 +107,38 @@ final class LivePhotoWatermarkHooks {
                 return 0;
             }
             HookKit.install(module, f, "bt9.j#c(disableWaterMark=true)", m,
-                    chain -> {
-                        int set = 0;
-                        try {
-                            List<Object> args = chain.getArgs();
-                            if (args.size() >= 2) {
-                                set = applyFeedbackFlags(f, args.get(1));
-                            }
-                            HookKit.hit(module, f, ENTRY_FEEDBACK + ".e/h set=" + set);
-                        } catch (Throwable t) {
-                            HookKit.error(module, f.id + " intercept error bt9.j#c", t);
-                        }
-                        // 改写的是参数对象内部字段，原参 proceed 即可。
-                        return chain.proceed();
-                    });
+                    entryHooker(module, f));
             return 1;
         } catch (Throwable t) {
             HookKit.warn(module, f.id + " skip: anchor bt9.j#c " + t);
             return 0;
         }
+    }
+
+    /**
+     * 入口改参 hooker。只有真正置位了至少一个字段才记 hit；宿主字段改名/缺失时
+     * set=0，{@link #applyFeedbackFlags} 已写 skip，不能再把失效报成命中。
+     */
+    static XposedInterface.Hooker entryHooker(XposedModule module, Feature f) {
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                int set = 0;
+                try {
+                    List<Object> args = chain.getArgs();
+                    if (args.size() >= 2) {
+                        set = applyFeedbackFlags(f, args.get(1));
+                    }
+                    if (set > 0) {
+                        HookKit.hit(module, f, ENTRY_FEEDBACK + ".e/h set=" + set);
+                    }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error bt9.j#c", t);
+                }
+                // 改写的是参数对象内部字段，原参 proceed 即可。
+                return chain.proceed();
+            }
+        };
     }
 
     /**
@@ -139,18 +153,21 @@ final class LivePhotoWatermarkHooks {
                 return 0;
             }
             HookKit.install(module, f, "zk2.h#a(code=" + LIVE_PHOTO_SAVE_SWITCH_CODE + "→false)", m,
-                    chain -> {
-                        try {
-                            List<Object> args = chain.getArgs();
-                            if (args.size() == 1 && args.get(0) instanceof Integer
-                                    && isLivePhotoSwitchCode((Integer) args.get(0))) {
-                                HookKit.hit(module, f, "zk2.h#a(" + args.get(0) + ") → false");
-                                return Boolean.FALSE;
+                    new XposedInterface.Hooker() {
+                        @Override
+                        public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                            try {
+                                List<Object> args = chain.getArgs();
+                                if (args.size() == 1 && args.get(0) instanceof Integer
+                                        && isLivePhotoSwitchCode((Integer) args.get(0))) {
+                                    HookKit.hit(module, f, "zk2.h#a(" + args.get(0) + ") → false");
+                                    return Boolean.FALSE;
+                                }
+                            } catch (Throwable t) {
+                                HookKit.error(module, f.id + " intercept error zk2.h#a", t);
                             }
-                        } catch (Throwable t) {
-                            HookKit.error(module, f.id + " intercept error zk2.h#a", t);
+                            return chain.proceed();
                         }
-                        return chain.proceed();
                     });
             return 1;
         } catch (Throwable t) {

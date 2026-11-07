@@ -96,22 +96,25 @@ final class CopyLinkHooks {
 
     /** 主挂：改写即将写入剪贴板的 ClipData 文本。仅处理单条纯文本，其余原样放行。 */
     private static XposedInterface.Hooker clipDataHook(XposedModule module, Feature f, boolean stripToken) {
-        return chain -> {
-            Object[] replaced = null;
-            try {
-                List<Object> args = chain.getArgs();
-                Object data = args.size() > 1 ? args.get(1) : null;
-                if (data instanceof ClipData) {
-                    ClipData clean = sanitizeClip(module, f, (ClipData) data, stripToken);
-                    if (clean != null) {
-                        replaced = args.toArray();
-                        replaced[1] = clean;
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object[] replaced = null;
+                try {
+                    List<Object> args = chain.getArgs();
+                    Object data = args.size() > 1 ? args.get(1) : null;
+                    if (data instanceof ClipData) {
+                        ClipData clean = sanitizeClip(module, f, (ClipData) data, stripToken);
+                        if (clean != null) {
+                            replaced = args.toArray();
+                            replaced[1] = clean;
+                        }
                     }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error h8b.e#b", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error h8b.e#b", t);
+                return replaced == null ? chain.proceed() : chain.proceed(replaced);
             }
-            return replaced == null ? chain.proceed() : chain.proceed(replaced);
         };
     }
 
@@ -201,29 +204,32 @@ final class CopyLinkHooks {
 
     /** 副挂：k92/r.a(Context, label, text)，只对 label == "ug-share-copy-link" 的复制链接生效。 */
     private static XposedInterface.Hooker funnelHook(XposedModule module, Feature f, boolean stripToken) {
-        return chain -> {
-            Object[] replaced = null;
-            try {
-                List<Object> args = chain.getArgs();
-                if (args.size() >= 3) {
-                    Object label = args.get(1);
-                    Object text = args.get(2);
-                    seen(module, f, "m92.r.a label=" + label);
-                    CharSequence csLabel = label instanceof CharSequence ? (CharSequence) label : null;
-                    if (text instanceof String && isCopyLabel(csLabel)) {
-                        String raw = (String) text;
-                        String clean = sanitizeCopy(raw, csLabel, stripToken);
-                        if (!clean.equals(raw)) {
-                            replaced = args.toArray();
-                            replaced[2] = clean;
-                            HookKit.hit(module, f, "m92.r.a removed=" + removedKeys(raw, stripToken));
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object[] replaced = null;
+                try {
+                    List<Object> args = chain.getArgs();
+                    if (args.size() >= 3) {
+                        Object label = args.get(1);
+                        Object text = args.get(2);
+                        seen(module, f, "m92.r.a label=" + label);
+                        CharSequence csLabel = label instanceof CharSequence ? (CharSequence) label : null;
+                        if (text instanceof String && isCopyLabel(csLabel)) {
+                            String raw = (String) text;
+                            String clean = sanitizeCopy(raw, csLabel, stripToken);
+                            if (!clean.equals(raw)) {
+                                replaced = args.toArray();
+                                replaced[2] = clean;
+                                HookKit.hit(module, f, "m92.r.a removed=" + removedKeys(raw, stripToken));
+                            }
                         }
                     }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error m92.r.a", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error m92.r.a", t);
+                return replaced == null ? chain.proceed() : chain.proceed(replaced);
             }
-            return replaced == null ? chain.proceed() : chain.proceed(replaced);
         };
     }
 

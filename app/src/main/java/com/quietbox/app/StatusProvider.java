@@ -47,8 +47,8 @@ public final class StatusProvider extends ContentProvider {
     /** 回传数据的新鲜度上限，与 ReportProtocol 的默认 TTL 保持一致。 */
     public static final long REPORT_TTL_MS = ReportProtocol.DEFAULT_TTL_MS;
 
-    /** 落盘时统一加 "v:" 前缀，避免与其他本地键冲突。 */
-    private static final String VALUE_PREFIX = "v:";
+    /** 落盘时统一加 "v:" 前缀，避免与其他本地键冲突。诊断页批量读取复用该前缀。 */
+    static final String VALUE_PREFIX = "v:";
 
     /**
      * 同步落盘标记：崩溃路径的 flush 要求 provider 用 commit() 而不是 apply()，

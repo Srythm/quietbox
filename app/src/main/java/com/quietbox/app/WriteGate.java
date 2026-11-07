@@ -13,10 +13,30 @@ final class WriteGate {
 
     private final io.github.yigenhuobah.core.WriteGate<Boolean> mDelegate =
             new io.github.yigenhuobah.core.WriteGate<>();
+    /** 有在途写入的 key：refresh 不能拿回读值覆盖用户刚做的乐观选择。 */
+    private final java.util.Set<String> mPending = new java.util.HashSet<>();
 
     /** 记录一次新写入并返回其序号（单调递增，不依赖系统时钟）。 */
     long begin(String key) {
+        synchronized (mPending) {
+            mPending.add(key);
+        }
         return mDelegate.begin(key);
+    }
+
+    /**
+     * 记录快照读到的值，作为「还没有确认落盘值」时的回滚基线。
+     * 已有确认值时不会覆盖（core 语义），refresh 可以放心逐次播种。
+     */
+    void seed(String key, boolean value) {
+        mDelegate.seed(key, value);
+    }
+
+    /** 该 key 是否有尚未返回结果的写入；有则 refresh 不得回写开关状态。 */
+    boolean isPending(String key) {
+        synchronized (mPending) {
+            return mPending.contains(key);
+        }
     }
 
     /**
@@ -26,7 +46,13 @@ final class WriteGate {
      *         false 表示已有更新的写入，旧结果不能覆盖界面。
      */
     boolean onResult(String key, long seq, boolean committed, boolean requested) {
-        return mDelegate.onResult(key, seq, committed, requested);
+        boolean latest = mDelegate.onResult(key, seq, committed, requested);
+        if (latest) {
+            synchronized (mPending) {
+                mPending.remove(key);
+            }
+        }
+        return latest;
     }
 
     /**
@@ -41,6 +67,9 @@ final class WriteGate {
 
     /** Fragment 销毁时丢弃在途结果与确认值。 */
     void clear() {
+        synchronized (mPending) {
+            mPending.clear();
+        }
         mDelegate.clear();
     }
 }

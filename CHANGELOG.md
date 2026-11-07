@@ -7,6 +7,7 @@
 - **EN-04 旧门收编为方法锚点**：`MediaSaveConfig#b()Z` 纳入 `anchors.json` 与 `check-mounts`（65 项）；宿主改名时走 critical skip，不再出现「门 2 成功、门 1 静默缺失」。
 - **PV-01 检测器定位失败可见**：`ScreenShotHooks` 对「像检测器但结构不匹配」的观察者每类 WARN 一次并写入诊断备注，不再静默返回。
 - **hook label 更新到 9.53.0 类名**：诊断回传与日志不再显示 9.52.1 的 `nfd.m0`/`bm8.j` 等旧名。
+- **框架类黑名单落地（含唯一豁免）**：`HookKit.install` 在 `module.hook` 前拒绝 `android.`/`java.`/`dalvik.`/`androidx.`/`kotlin.` 开头的目标类并记 skip；EX-02 不再挂 `Application#onCreate`，改用 `ActivityThread.currentApplication()` 反射。唯一豁免是 PV-01 的 `android.content.ContentResolver#registerContentObserver`——截图检测器类名每版都变（9.49.1 `idc.d1/j1` → 9.50.0 `xec.d1/j1`），无等价的业务类挂载点；该豁免已被 `HookKit.installForDiscovery` 收窄到这一个类，并由 `HookKitSourceScanTest` 锁定调用点。
 
 ## 0.9.8 - 2026-11-06
 

@@ -40,13 +40,18 @@ final class ScreenShotHooks {
             Class<?> resolver = Class.forName("android.content.ContentResolver", false, cl);
             Method three = HookKit.findMethod(module, f, resolver, "registerContentObserver",
                     Uri.class, boolean.class, ContentObserver.class);
-            HookKit.install(module, f, "registerContentObserver", three, observerHook(module, f));
+            // 唯一允许的框架类挂载点（并已被 HookKit 收窄到
+            // android.content.ContentResolver 这一个类）：检测器类名每版都变，
+            // 只能在注册观察者时做运行时特征定位；见 HookKit.installForDiscovery。
+            HookKit.installForDiscovery(module, f, "registerContentObserver", three,
+                    observerHook(module, f));
 
             // 部分 ROM 上框架/App 走 4 参数重载；不存在就跳过，不记失败。
             Method four = HookKit.findMethodQuiet(resolver, "registerContentObserver",
                     Uri.class, boolean.class, ContentObserver.class, int.class);
             if (four != null) {
-                HookKit.install(module, f, "registerContentObserver/4", four, observerHook(module, f));
+                HookKit.installForDiscovery(module, f, "registerContentObserver/4", four,
+                        observerHook(module, f));
             }
             HookState.note(f, "按运行时特征定位，等待检测器注册观察者");
         } catch (Throwable t) {
@@ -56,22 +61,25 @@ final class ScreenShotHooks {
     }
 
     private static XposedInterface.Hooker observerHook(XposedModule module, Feature f) {
-        return chain -> {
-            try {
-                Object arg = chain.getArg(2);
-                if (arg instanceof ContentObserver) {
-                    Class<?> observerClass = arg.getClass();
-                    Class<?> outer = locateOuter(observerClass);
-                    if (outer != null) {
-                        bindOuter(module, f, outer);
-                    } else {
-                        noteLocateMiss(module, f, observerClass);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object arg = chain.getArg(2);
+                    if (arg instanceof ContentObserver) {
+                        Class<?> observerClass = arg.getClass();
+                        Class<?> outer = locateOuter(observerClass);
+                        if (outer != null) {
+                            bindOuter(module, f, outer);
+                        } else {
+                            noteLocateMiss(module, f, observerClass);
+                        }
                     }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error registerContentObserver", t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error registerContentObserver", t);
+                return chain.proceed();
             }
-            return chain.proceed();
         };
     }
 
@@ -178,16 +186,19 @@ final class ScreenShotHooks {
     }
 
     private static XposedInterface.Hooker mediaChangeHook(XposedModule module, Feature f, String key) {
-        return chain -> {
-            try {
-                if (Boolean.FALSE.equals(chain.getArg(1))) {
-                    HookKit.hit(module, f, key + " auto");
-                    return null;
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    if (Boolean.FALSE.equals(chain.getArg(1))) {
+                        HookKit.hit(module, f, key + " auto");
+                        return null;
+                    }
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error " + key, t);
                 }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error " + key, t);
+                return chain.proceed();
             }
-            return chain.proceed();
         };
     }
 }

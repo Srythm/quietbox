@@ -61,19 +61,22 @@ final class ScoreGuideHooks {
      * SuperNotCalledException），弹窗构造分支则因 extra 缺失不再进入。
      */
     static XposedInterface.Hooker onCreateHooker(XposedModule module, Feature f) {
-        return chain -> {
-            try {
-                Object self = chain.getThisObject();
-                if (self instanceof Activity) {
-                    Activity act = (Activity) self;
-                    act.finish();
-                    neutralizeScoreDialogType(act);
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object self = chain.getThisObject();
+                    if (self instanceof Activity) {
+                        Activity act = (Activity) self;
+                        act.finish();
+                        neutralizeScoreDialogType(act);
+                    }
+                    HookKit.hit(module, f, "onCreate(finish)");
+                } catch (Throwable t) {
+                    HookKit.error(module, f.id + " intercept error onCreate", t);
                 }
-                HookKit.hit(module, f, "onCreate(finish)");
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error onCreate", t);
+                return chain.proceed();
             }
-            return chain.proceed();
         };
     }
 

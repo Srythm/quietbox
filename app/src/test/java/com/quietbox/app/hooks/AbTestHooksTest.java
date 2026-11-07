@@ -106,4 +106,35 @@ public class AbTestHooksTest {
         assertFalse("provider 成功拉取过之后失败：必须保持上一次状态，不能用启动快照回退",
                 AbTestHooks.AbRuntime.mayUseStartupSnapshot(true));
     }
+
+    @Test
+    public void providerCallPoolIsBoundedAndRejectsOverflow() throws Exception {
+        java.util.concurrent.ExecutorService pool = AbTestHooks.AbRuntime.newCallPool();
+        java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        try {
+            pool.execute(() -> {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            // 第二个任务进入容量 1 的队列。
+            pool.execute(() -> {
+            });
+            try {
+                pool.execute(() -> {
+                });
+                org.junit.Assert.fail("队列满后必须拒绝新任务，不能无限堆积 binder 调用");
+            } catch (java.util.concurrent.RejectedExecutionException expected) {
+                // 预期：最多 1 个运行 + 1 个排队。
+            }
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
 }

@@ -9,6 +9,7 @@ import com.quietbox.app.anchor.AnchorKeys;
 
 import java.lang.reflect.Method;
 
+import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
@@ -123,17 +124,21 @@ final class SplashAdHooks {
             HookKit.warn(module, f.id + " skip: SplashAdPlaceHolderView#onCreateView not found");
             return;
         }
-        HookKit.install(module, f, "SplashAdPlaceHolderView#onCreateView", m, chain -> {
-            try {
-                Object inflater = chain.getArg(0);
-                if (inflater instanceof LayoutInflater) {
-                    HookKit.hit(module, f, "placeholder suppressed");
-                    return new View(((LayoutInflater) inflater).getContext());
-                }
-            } catch (Throwable t) {
-                HookKit.error(module, f.id + " intercept error placeholder", t);
-            }
-            return chain.proceed();
-        });
+        HookKit.install(module, f, "SplashAdPlaceHolderView#onCreateView", m,
+                new XposedInterface.Hooker() {
+                    @Override
+                    public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                        try {
+                            Object inflater = chain.getArg(0);
+                            if (inflater instanceof LayoutInflater) {
+                                HookKit.hit(module, f, "placeholder suppressed");
+                                return new View(((LayoutInflater) inflater).getContext());
+                            }
+                        } catch (Throwable t) {
+                            HookKit.error(module, f.id + " intercept error placeholder", t);
+                        }
+                        return chain.proceed();
+                    }
+                });
     }
 }
