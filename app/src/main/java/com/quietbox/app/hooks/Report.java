@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  *
  * 方向与 AbReportProvider 相同：hook 侧只能主动 call 进模块的 ContentProvider
  * （remote prefs 在目标进程只读）。Context 用 ActivityThread 反射拿——Report.start
- * 在 installAll 开头就执行，早于 Hooks/AbTestHooks 挂的 Application#onCreate 兜底，
+ * 在 installAll 开头就执行，早于 AbTestHooks 的运行时 Context 捕获，
  * 不能依赖那个回调先拿到 Context。
  *
  * 只由主进程启动：子进程的 hook 注册状态不完整，回传会让诊断页误报。
