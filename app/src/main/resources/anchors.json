@@ -469,6 +469,22 @@
       "critical": true,
       "note": "通讯录同步生命周期注册"
     },
+    "contact_sync_coord_i": {
+      "c": "com.xingin.login.manager.contacts.ContactsSyncCoordinator",
+      "m": "i",
+      "s": "(Landroid/content/Context;Lo39/n;Lkotlin/jvm/functions/Function0;ILjava/lang/Object;)V",
+      "feature": "PV-02",
+      "critical": true,
+      "note": "协调器默认参数入口（SplashGrowthApplication 冷启动 DAILY_LAUNCH/SIGN_UP 直连，9.53.0 classes7）"
+    },
+    "contact_sync_coord_e": {
+      "c": "com.xingin.login.manager.contacts.ContactsSyncCoordinator",
+      "m": "e",
+      "s": "(Landroid/app/Application;)V",
+      "feature": "PV-02",
+      "critical": true,
+      "note": "协调器生命周期注册（冷启动直连，SPI installLifecycleObserver 亦委托至此）"
+    },
     "goods_comment_start_add_in": {
       "c": "com.xingin.commercial.vision.post.spi.GoodsCommentAddInProcessor",
       "m": "startAddIn",

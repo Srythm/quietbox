@@ -16,16 +16,22 @@ import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
- * ContactSyncHooks.completeThenSkip 的 JVM 单测（发现 #60 回归）：
+ * ContactSyncHooks 回调保持式跳过器的 JVM 单测：
  *
- * 3 参 requestContactsSync(Context, String, z2.b) 带完成回调契约（原方法体在触发未知
- * 与同步结束两处都会回调 onCompleted，见 9.50.0 UploadContactServiceExtension.java:103-116）。
- * 旧实现整体 skipVoid，回调随方法体一起消失。新实现必须：
+ * completeThenSkip（发现 #60 回归）：3 参 requestContactsSync(Context, String, z2.b)
+ * 带完成回调契约（原方法体在触发未知与同步结束两处都会回调 onCompleted，见
+ * 9.50.0 UploadContactServiceExtension.java:103-116）。旧实现整体 skipVoid，
+ * 回调随方法体一起消失。新实现必须：
  * <ul>
  *   <li>先调用回调（onCompleted 恰好一次），再跳过业务体——返回 null 且从不 proceed；</li>
  *   <li>回调缺失（null）与回调抛错都不放行业务体（放行等于恢复通讯录上传）；</li>
  *   <li>反射在实现类 / 接口上都能找到 onCompleted()。</li>
  * </ul>
+ *
+ * completeThenRunFunction0（F-039 回归）：协调器
+ * i(Context, scene, Function0, mask, marker) 的第 3 参 Function0 是完成续体，
+ * 宿主自身 config_disabled 时也会调用它（9.53.0 j fallback→g(Function0)）。
+ * 同样的契约：先 invoke() 恰好一次再跳过业务体；null / 抛错都不得放行。
  *
  * libxposed 的 XposedModule 是抽象壳：用 Proxy 实现 XposedInterface 后 attachFramework，
  * 即可在 JVM 单测里跑真实 Hooker（与 HookDiagnosisTest 同构）。
@@ -63,6 +69,38 @@ public class ContactSyncHooksTest {
     static class ThrowingCallback {
         public void onCompleted() {
             throw new IllegalStateException("callback boom");
+        }
+    }
+
+    /** kotlin Function0 的替身：invoke() 落在实现类上（Kotlin lambda 编译后的形状）。 */
+    static class Function0OnSelf {
+        int invoked;
+
+        public Object invoke() {
+            invoked++;
+            return this;
+        }
+    }
+
+    /** invoke() 只声明在接口上的替身。 */
+    interface InvokeInterface {
+        Object invoke();
+    }
+
+    static class Function0OnInterface implements InvokeInterface {
+        int invoked;
+
+        @Override
+        public Object invoke() {
+            invoked++;
+            return this;
+        }
+    }
+
+    /** invoke() 抛错的替身：续体失败也不得放行业务体。 */
+    static class ThrowingFunction0 {
+        public Object invoke() {
+            throw new IllegalStateException("continuation boom");
         }
     }
 
@@ -180,5 +218,69 @@ public class ContactSyncHooksTest {
 
         assertNull(result);
         assertEquals(0, chain.proceedCalls.get());
+    }
+
+    // ---- F-039：协调器 i(Context, scene, Function0, mask, marker) 的续体保持 ----
+
+    @Test
+    public void invokesFunction0OnceThenSkipsBody() throws Throwable {
+        XposedModule module = newModule();
+        Function0OnSelf continuation = new Function0OnSelf();
+        // 协调器 i 的第 3 参（index 2）是 Function0 续体；冷启动 DAILY_LAUNCH 传 null，
+        // 这里锁非 null 契约：先 invoke() 恰好一次，再跳过业务体。
+        ChainFake chain = new ChainFake(new Object(), "scene", continuation, 4, null);
+
+        XposedInterface.Hooker hooker =
+                ContactSyncHooks.completeThenRunFunction0(module, Feature.VIDEO_DEFAULT_MUTE, "coordinator.i");
+
+        Object result = hooker.intercept(chain.proxy());
+
+        assertNull("跳过业务体必须返回 null（void 方法）", result);
+        assertEquals("invoke() 必须恰好调用一次（宿主 config_disabled 同款行为）", 1, continuation.invoked);
+        assertEquals("业务体不得执行（proceed 即恢复通讯录同步）", 0, chain.proceedCalls.get());
+    }
+
+    @Test
+    public void findsInvokeDeclaredOnInterface() throws Throwable {
+        XposedModule module = newModule();
+        Function0OnInterface continuation = new Function0OnInterface();
+        ChainFake chain = new ChainFake(new Object(), "scene", continuation, 4, null);
+
+        XposedInterface.Hooker hooker =
+                ContactSyncHooks.completeThenRunFunction0(module, Feature.VIDEO_DEFAULT_MUTE, "coordinator.i");
+
+        hooker.intercept(chain.proxy());
+
+        assertEquals("接口上的 invoke() 也必须被调到", 1, continuation.invoked);
+        assertEquals(0, chain.proceedCalls.get());
+    }
+
+    @Test
+    public void nullFunction0StillSkipsBody() throws Throwable {
+        XposedModule module = newModule();
+        // 冷启动 DAILY_LAUNCH / 注册 SIGN_UP 直连时续体为 null（mask 0x4）：纯跳过。
+        ChainFake chain = new ChainFake(new Object(), "scene", null, 4, null);
+
+        XposedInterface.Hooker hooker =
+                ContactSyncHooks.completeThenRunFunction0(module, Feature.VIDEO_DEFAULT_MUTE, "coordinator.i");
+
+        Object result = hooker.intercept(chain.proxy());
+
+        assertNull(result);
+        assertEquals(0, chain.proceedCalls.get());
+    }
+
+    @Test
+    public void throwingFunction0StillSkipsBody() throws Throwable {
+        XposedModule module = newModule();
+        ChainFake chain = new ChainFake(new Object(), "scene", new ThrowingFunction0(), 4, null);
+
+        XposedInterface.Hooker hooker =
+                ContactSyncHooks.completeThenRunFunction0(module, Feature.VIDEO_DEFAULT_MUTE, "coordinator.i");
+
+        Object result = hooker.intercept(chain.proxy());
+
+        assertNull("续体抛错不得向外传播", result);
+        assertEquals("续体抛错也不得放行业务体", 0, chain.proceedCalls.get());
     }
 }

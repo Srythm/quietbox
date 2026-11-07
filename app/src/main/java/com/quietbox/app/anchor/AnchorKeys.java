@@ -70,6 +70,8 @@ public final class AnchorKeys {
     public static final String CONTACT_SYNC_START = "contact_sync_start";
     public static final String CONTACT_SYNC_REQUEST = "contact_sync_request";
     public static final String CONTACT_SYNC_LIFECYCLE = "contact_sync_lifecycle";
+    public static final String CONTACT_SYNC_COORD_I = "contact_sync_coord_i";
+    public static final String CONTACT_SYNC_COORD_E = "contact_sync_coord_e";
     public static final String GOODS_COMMENT_START_ADD_IN = "goods_comment_start_add_in";
     public static final String FEED_CARD_APPEND_FILTER = "feed_card_append_filter";
     public static final String FEED_CARD_REFRESH_FILTER = "feed_card_refresh_filter";

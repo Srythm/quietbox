@@ -27,8 +27,15 @@ import io.github.libxposed.api.XposedModule;
  */
 final class ScoreGuideHooks {
 
+    /**
+     * 宿主读取的 extra 键：AppScoreDialogActivity.onCreate→de() 用
+     * getStringExtra("param_dialog_type") 取类型（9.53.0 已确认）。抹掉的是键，
+     * 不是值——值被当键 removeExtra 是 F-040 的旧 bug。
+     */
+    static final String EXTRA_KEY = "param_dialog_type";
+
     /** 宿主 de() 只在该 dialog_type 取值分支构造并 show() 评分弹窗。 */
-    static final String SCORE_DIALOG_TYPE = "dialog_app_score";
+    static final String EXTRA_VALUE = "dialog_app_score";
 
     private ScoreGuideHooks() {
     }
@@ -70,11 +77,11 @@ final class ScoreGuideHooks {
         };
     }
 
-    /** 抹掉 param_dialog_type，让宿主 de() 走未知类型→finish() 分支，不再构造弹窗。 */
+    /** 抹掉 param_dialog_type 键，让宿主 de() 走未知类型→finish() 分支，不再构造弹窗。 */
     static void neutralizeScoreDialogType(Activity act) {
         android.content.Intent intent = act.getIntent();
         if (intent != null) {
-            intent.removeExtra(SCORE_DIALOG_TYPE);
+            intent.removeExtra(EXTRA_KEY);
         }
     }
 }

@@ -27,7 +27,9 @@ import io.github.libxposed.api.XposedModule;
  *       弹窗不再构造、不再 show；</li>
  *   <li>照常 proceed 恰好一次（super.onCreate 只在 de() 内被调用，跳过整个 onCreate
  *       会抛 SuperNotCalledException）；</li>
- *   <li>extra 字面量与宿主分支一致（"dialog_app_score"）。</li>
+ *   <li>extra 键与值分开锁定：键 "param_dialog_type" 进 removeExtra（宿主
+ *       getStringExtra 的键），值 "dialog_app_score" 与宿主分支字面量一致
+ *       （F-040：旧实现把值当键 removeExtra，UI-01 实际失效）。</li>
  * </ul>
  *
  * libxposed 的 XposedModule 是抽象壳：用 Proxy 实现 XposedInterface 后 attachFramework，
@@ -104,8 +106,15 @@ public class ScoreGuideHooksTest {
     @Test
     public void dialogTypeLiteralMatchesHostBranch() {
         // 宿主 de() 以 Intrinsics.areEqual(stringExtra, "dialog_app_score") 进入弹窗分支，
-        // 字面量漂移时这里先失败，避免静默退回「弹窗照弹」的旧行为。
-        assertEquals("dialog_app_score", ScoreGuideHooks.SCORE_DIALOG_TYPE);
+        // 值字面量漂移时这里先失败，避免静默退回「弹窗照弹」的旧行为（F-040）。
+        assertEquals("dialog_app_score", ScoreGuideHooks.EXTRA_VALUE);
+    }
+
+    @Test
+    public void extraKeyMatchesHostReader() {
+        // 宿主以 getStringExtra("param_dialog_type") 读 extra（9.53.0 已确认），
+        // removeExtra 必须用同一个键；旧实现把值当键 remove，UI-01 实际失效。
+        assertEquals("param_dialog_type", ScoreGuideHooks.EXTRA_KEY);
     }
 
     @Test
@@ -118,11 +127,20 @@ public class ScoreGuideHooksTest {
                 ScoreGuideHooks.onCreateHooker(module, Feature.TRACK_SUPPRESS);
         Object result = hooker.intercept(chain.proxy());
 
-        assertEquals("必须抹掉宿主的 param_dialog_type extra",
-                "dialog_app_score", activity.intent.removedExtra);
+        assertEquals("必须抹掉宿主的 param_dialog_type 键（不是 dialog_app_score 值）",
+                ScoreGuideHooks.EXTRA_KEY, activity.intent.removedExtra);
         assertEquals("proceed 必须恰好一次（super.onCreate 仍由宿主执行）",
                 1, chain.proceedCalls.get());
         assertEquals("proceed 结果必须原样返回", "proceeded", result);
+    }
+
+    @Test
+    public void removedKeyAndValueStayDistinct() {
+        // 键与值是两个概念：键进 removeExtra，值只用于锁定宿主分支。
+        // 两者一旦相等，说明有人又把「值」当回了「键」（F-040 回归）。
+        org.junit.Assert.assertNotEquals(
+                "EXTRA_KEY 与 EXTRA_VALUE 不得相同（值当键是 F-040 的旧 bug）",
+                ScoreGuideHooks.EXTRA_KEY, ScoreGuideHooks.EXTRA_VALUE);
     }
 
     @Test
