@@ -139,6 +139,19 @@ public final class AnchorTable {
         }
     }
 
+    /**
+     * 读取 classes 段的全限定类名字符串，不触发类加载（供按 getName() 字符串比对
+     * 的调用方使用，如 NoteUnavailableHooks 的 valueOfType）。缺失返回空串。
+     */
+    public String className(String key) {
+        try {
+            JSONObject classes = root.optJSONObject("classes");
+            return classes == null ? "" : classes.optString(key, "");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     public Class<?> clazz(String key) {
         Class<?> cached = classCache.get(key);
         if (cached != null) {

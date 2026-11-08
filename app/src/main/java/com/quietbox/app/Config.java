@@ -3,6 +3,7 @@ package com.quietbox.app;
 import android.content.SharedPreferences;
 import android.util.Log;
 
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -37,7 +38,6 @@ public final class Config {
     private final Map<Feature, Boolean> mEnabled = new EnumMap<>(Feature.class);
     private final Map<String, String> mAbOverrides = new LinkedHashMap<>();
     private boolean mStripXsecToken = DEFAULT_STRIP_XSEC_TOKEN;
-    private int mConfigVersion = DEFAULT_CONFIG_VERSION;
 
     private Config() {
         for (Feature f : Feature.values()) {
@@ -126,13 +126,12 @@ public final class Config {
             warnKey(logger, KEY_STRIP_XSEC_TOKEN, t);
         }
         try {
-            parseOverrides(source.getString(KEY_AB_OVERRIDES, ""), config.mAbOverrides);
+            AbOverrides.parseInto(source.getString(KEY_AB_OVERRIDES, ""), config.mAbOverrides);
         } catch (Throwable t) {
             warnKey(logger, KEY_AB_OVERRIDES, t);
         }
         try {
             int stored = source.getInt(KEY_CONFIG_VERSION, DEFAULT_CONFIG_VERSION);
-            config.mConfigVersion = stored;
             if (stored > CURRENT_CONFIG_VERSION && logger != null) {
                 logger.warn("配置版本 v" + stored + " 高于模块支持 v"
                         + CURRENT_CONFIG_VERSION + "，按兼容模式继续", null);
@@ -212,33 +211,8 @@ public final class Config {
         return mStripXsecToken;
     }
 
-    /** 存储里读到的配置版本；缺键或读取失败时为 {@link #DEFAULT_CONFIG_VERSION}。 */
-    public int configVersion() {
-        return mConfigVersion;
-    }
-
+    /** 不可变副本：外部改写不会污染内部状态（F-056）。 */
     public Map<String, String> abOverrides() {
-        return mAbOverrides;
-    }
-
-    public String abOverride(String key) {
-        return mAbOverrides.get(key);
-    }
-
-    private static void parseOverrides(String raw, Map<String, String> out) {
-        if (raw == null) {
-            return;
-        }
-        for (String line : raw.split("\n")) {
-            int eq = line.indexOf('=');
-            if (eq <= 0) {
-                continue;
-            }
-            String key = line.substring(0, eq).trim();
-            String value = line.substring(eq + 1).trim();
-            if (!key.isEmpty() && !value.isEmpty()) {
-                out.put(key, value);
-            }
-        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(mAbOverrides));
     }
 }

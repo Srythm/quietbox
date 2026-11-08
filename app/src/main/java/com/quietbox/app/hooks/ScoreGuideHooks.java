@@ -61,23 +61,13 @@ final class ScoreGuideHooks {
      * SuperNotCalledException），弹窗构造分支则因 extra 缺失不再进入。
      */
     static XposedInterface.Hooker onCreateHooker(XposedModule module, Feature f) {
-        return new XposedInterface.Hooker() {
-            @Override
-            public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                try {
-                    Object self = chain.getThisObject();
-                    if (self instanceof Activity) {
-                        Activity act = (Activity) self;
-                        act.finish();
+        return HookKit.finishThenProceed(module, f, "onCreate(finish)",
+                new HookKit.ActivityAction() {
+                    @Override
+                    public void run(Activity act) {
                         neutralizeScoreDialogType(act);
                     }
-                    HookKit.hit(module, f, "onCreate(finish)");
-                } catch (Throwable t) {
-                    HookKit.error(module, f.id + " intercept error onCreate", t);
-                }
-                return chain.proceed();
-            }
-        };
+                });
     }
 
     /** 抹掉 param_dialog_type 键，让宿主 de() 走未知类型→finish() 分支，不再构造弹窗。 */

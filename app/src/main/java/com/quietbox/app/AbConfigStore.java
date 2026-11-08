@@ -105,7 +105,7 @@ final class AbConfigStore {
     }
 
     Map<String, String> overrides() {
-        return parse(read(Config.KEY_AB_OVERRIDES));
+        return AbOverrides.parse(read(Config.KEY_AB_OVERRIDES));
     }
 
     boolean isForced(String key) {
@@ -142,13 +142,13 @@ final class AbConfigStore {
                 ConfigWrites.notifyResult(callback, false);
                 return;
             }
-            Map<String, String> map = parse(raw);
+            Map<String, String> map = AbOverrides.parse(raw);
             if (forced) {
                 map.put(key, value);
             } else {
                 map.remove(key);
             }
-            String next = serialize(map);
+            String next = AbOverrides.serialize(map);
             boolean committed = commitString(remote, Config.KEY_AB_OVERRIDES, next);
             if (committed) {
                 mirrorString(AbReportProvider.KEY_OVERRIDES, next);
@@ -239,33 +239,4 @@ final class AbConfigStore {
         }
     }
 
-    private static Map<String, String> parse(String raw) {
-        Map<String, String> map = new LinkedHashMap<>();
-        if (raw == null) {
-            return map;
-        }
-        for (String line : raw.split("\n")) {
-            int eq = line.indexOf('=');
-            if (eq <= 0) {
-                continue;
-            }
-            String key = line.substring(0, eq).trim();
-            String value = line.substring(eq + 1).trim();
-            if (!key.isEmpty() && !value.isEmpty()) {
-                map.put(key, value);
-            }
-        }
-        return map;
-    }
-
-    private static String serialize(Map<String, String> map) {
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, String> e : map.entrySet()) {
-            if (sb.length() > 0) {
-                sb.append('\n');
-            }
-            sb.append(e.getKey()).append('=').append(e.getValue());
-        }
-        return sb.toString();
-    }
 }

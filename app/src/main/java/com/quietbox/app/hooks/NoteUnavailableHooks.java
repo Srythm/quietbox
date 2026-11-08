@@ -3,6 +3,7 @@ package com.quietbox.app.hooks;
 import com.quietbox.app.Feature;
 import com.quietbox.app.HookState;
 import com.quietbox.app.anchor.AnchorKeys;
+import com.quietbox.app.anchor.AnchorTable;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -37,11 +38,11 @@ import io.github.libxposed.api.XposedModule;
  */
 final class NoteUnavailableHooks {
 
-    /** 混淆 lambda：NoteDetailRepository 的 map 阶段（锚点 rz9.o#invoke）。 */
-    private static final String REPO = "com.xingin.matrix.notedetail.v3.repo.NoteDetailRepository";
-    private static final String HOLDER = "com.xingin.notebase.entities.notedetail.DetailNoteFeedHolder";
-    private static final String FEED = "com.xingin.entities.notedetail.NoteFeed";
     private static final String ERROR_MODEL = "error";
+
+    /** 由 anchors.json 的 classes 段在 install 时解析；解析失败则按锚点缺失处理。 */
+    private static volatile String sRepoClass;
+    private static volatile String sHolderClass;
 
     /** 每个进程只打一次，确认 map 挂载点确实在链路上。 */
     private static volatile boolean sDiagnosed;
@@ -52,6 +53,11 @@ final class NoteUnavailableHooks {
     static void install(XposedModule module, ClassLoader cl) {
         Feature f = Feature.NOTE_UNAVAILABLE_VIEW;
         try {
+            // 目标类名唯一来源是 anchors.json 的 classes 段：适配改锚点表即可同步，
+            // 不再在本文件散落硬编码（CONTRIBUTING「类名/方法名走锚点表」）。
+            AnchorTable anchors = AnchorTable.get(cl);
+            sRepoClass = anchorClassName(anchors, AnchorKeys.NOTE_DETAIL_REPOSITORY);
+            sHolderClass = anchorClassName(anchors, AnchorKeys.NOTE_DETAIL_HOLDER);
             Method invoke = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.NOTE_UNAVAILABLE_MAP_INVOKE, true);
             HookKit.install(module, f, "NoteDetailRepository#map", invoke, hook(module, f),
@@ -61,6 +67,14 @@ final class NoteUnavailableHooks {
             HookKit.error(module, f.id + " install aborted", t);
             HookState.note(f, "安装异常");
         }
+    }
+
+    /** 取 classes 段的 FQN 字符串（不触发类加载）；表缺失/键缺失返回空串。 */
+    static String anchorClassName(AnchorTable anchors, String key) {
+        if (anchors == null) {
+            return "";
+        }
+        return anchors.className(key);
     }
 
     private static XposedInterface.Hooker hook(XposedModule module, Feature f) {
@@ -83,8 +97,8 @@ final class NoteUnavailableHooks {
                     if (!isErrorHolder(result)) {
                         return result;
                     }
-                    Object repo = valueOfType(chain.getThisObject(), REPO);
-                    Object previous = repo == null ? null : valueOfType(repo, HOLDER);
+                    Object repo = valueOfType(chain.getThisObject(), sRepoClass);
+                    Object previous = repo == null ? null : valueOfType(repo, sHolderClass);
                     if (isUsableHolder(previous) && sameNote(previous, result)) {
                         HookKit.hit(module, f, "restore cached holder");
                         return previous;
@@ -126,7 +140,10 @@ final class NoteUnavailableHooks {
         return ida != null && ida.length() > 0 && ida.equals(idb);
     }
 
-    private static Object feedOf(Object holder) {        if (holder == null || !HOLDER.equals(holder.getClass().getName())) {
+    private static Object feedOf(Object holder) {
+        String holderClass = sHolderClass;
+        if (holder == null || holderClass == null || holderClass.isEmpty()
+                || !holderClass.equals(holder.getClass().getName())) {
             return null;
         }
         return callNoArg(holder, "b");
@@ -190,7 +207,7 @@ final class NoteUnavailableHooks {
 
     /** 在对象（含父类）的字段里按运行时类型找一个值。混淆 lambda 的字段都声明成 Object。 */
     private static Object valueOfType(Object target, String typeName) {
-        if (target == null) {
+        if (target == null || typeName == null || typeName.isEmpty()) {
             return null;
         }
         try {

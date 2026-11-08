@@ -61,14 +61,14 @@ final class WatermarkHooks {
             Method m = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.WATERMARK_COMPOSE, true);
             if (m != null) {
-                if (HookKit.install(module, f, "jm8.j#a(disableWaterMark=true)", m,
+                if (HookKit.install(module, f, "watermarkCompose", m,
                         composeHooker(module, f))) {
                     installed++;
                     mainInstalled++;
                 }
             }
         } catch (Throwable t) {
-            HookKit.warn(module, f.id + " skip: class jm8.j " + t);
+            HookKit.warn(module, f.id + " skip: watermark compose anchor " + t);
         }
 
         // 2) 入口侧：bm8.i.i（9.51.0 为 ce8.i.i）的 disableWaterMark / disableAiWaterMark 置 true。
@@ -79,12 +79,12 @@ final class WatermarkHooks {
         // 3) 语义 getter：让上层查询也认为"无水印"。可选锚点：缺失只记 skip，不标 critical。
         try {
             Method m = HookKit.anchorMethod(cl, AnchorKeys.WATERMARK_MODEL_GETTER);
-            if (m != null && HookKit.install(module, f, "MediaSaveConfig#c(no-watermark)", m,
-                    HookKit.constBool(module, f, "MediaSaveConfig#c", true))) {
+            if (m != null && HookKit.install(module, f, "watermarkModelGetter", m,
+                    HookKit.constBool(module, f, "watermarkModelGetter", true))) {
                 installed++;
             }
         } catch (Throwable t) {
-            HookKit.warn(module, f.id + " skip: class MediaSaveConfig " + t);
+            HookKit.warn(module, f.id + " skip: watermark model getter anchor " + t);
         }
 
         if (installed == 0) {
@@ -197,10 +197,10 @@ final class WatermarkHooks {
             if (m == null) {
                 return 0;
             }
-            return HookKit.install(module, f, "jm8.i#i(disableWaterMark=true)", m,
+            return HookKit.install(module, f, "watermarkSaveEntry", m,
                     saveEntryHooker(module, f)) ? 1 : 0;
         } catch (Throwable t) {
-            HookKit.warn(module, f.id + " skip: anchor jm8.i#i " + t);
+            HookKit.warn(module, f.id + " skip: watermark save entry anchor " + t);
             return 0;
         }
     }

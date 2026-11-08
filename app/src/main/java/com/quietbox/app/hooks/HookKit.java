@@ -1,5 +1,6 @@
 package com.quietbox.app.hooks;
 
+import android.app.Activity;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
@@ -462,6 +463,43 @@ final class HookKit {
                     error(module, f.id + " intercept error " + detail, t);
                     return chain.proceed();
                 }
+            }
+        };
+    }
+
+    /** finish() 之后仍要 proceed 的 Activity 额外动作（如抹掉引导 extra）。 */
+    interface ActivityAction {
+        void run(Activity activity) throws Throwable;
+    }
+
+    /**
+     * 「finish() + hit + proceed 恰好一次」统一模板：onCreate 一类方法不能跳过，
+     * 否则 super.onCreate 未调用会抛 SuperNotCalledException。前段整段
+     * try/catch(Throwable) 记日志，return chain.proceed() 在 try 外且恰好一次
+     * （DESIGN §14 第 2/3 条）。Hooker 用匿名内部类（第 1 条）。
+     *
+     * @param onFinish 可选：finish() 后对同一 Activity 做的额外动作，null 表示无
+     */
+    static XposedInterface.Hooker finishThenProceed(XposedModule module, Feature f,
+                                                    String detail,
+                                                    @Nullable ActivityAction onFinish) {
+        return new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object self = chain.getThisObject();
+                    if (self instanceof Activity) {
+                        Activity act = (Activity) self;
+                        act.finish();
+                        if (onFinish != null) {
+                            onFinish.run(act);
+                        }
+                    }
+                    hit(module, f, detail);
+                } catch (Throwable t) {
+                    error(module, f.id + " intercept error " + detail, t);
+                }
+                return chain.proceed();
             }
         };
     }

@@ -106,11 +106,11 @@ final class LivePhotoWatermarkHooks {
             if (m == null) {
                 return 0;
             }
-            HookKit.install(module, f, "bt9.j#c(disableWaterMark=true)", m,
+            HookKit.install(module, f, "livePhotoSaveEntry", m,
                     entryHooker(module, f));
             return 1;
         } catch (Throwable t) {
-            HookKit.warn(module, f.id + " skip: anchor bt9.j#c " + t);
+            HookKit.warn(module, f.id + " skip: live photo save entry anchor " + t);
             return 0;
         }
     }
@@ -152,7 +152,7 @@ final class LivePhotoWatermarkHooks {
             if (m == null) {
                 return 0;
             }
-            HookKit.install(module, f, "zk2.h#a(code=" + LIVE_PHOTO_SAVE_SWITCH_CODE + "→false)", m,
+            HookKit.install(module, f, "livePhotoSaveSwitch(code=" + LIVE_PHOTO_SAVE_SWITCH_CODE + "→false)", m,
                     new XposedInterface.Hooker() {
                         @Override
                         public Object intercept(XposedInterface.Chain chain) throws Throwable {

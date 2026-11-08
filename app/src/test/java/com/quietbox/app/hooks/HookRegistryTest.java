@@ -4,10 +4,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.quietbox.app.Config;
 import com.quietbox.app.Feature;
 
 import org.junit.Test;
 
+import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.Set;
 
@@ -58,5 +60,17 @@ public class HookRegistryTest {
         assertEquals("注册表必须恰好覆盖全部非 blocked Feature", expected, registered);
         assertFalse("installer 注册表为空", registered.isEmpty());
         assertFalse(registered.contains(null));
+    }
+
+    /**
+     * F-064：Installer 不再带未使用的 Feature 形参。23 个 lambda 全部忽略过它，
+     * 记账用的 Feature 由 installAll 循环变量持有，接口只剩 module/cl/config 三个参数。
+     */
+    @Test
+    public void installerHasNoUnusedFeatureParameter() throws Exception {
+        Method install = Hooks.Installer.class.getDeclaredMethod("install",
+                io.github.libxposed.api.XposedModule.class, ClassLoader.class, Config.class);
+        assertEquals("Installer.install 必须恰好三个参数", 3, install.getParameterCount());
+        assertEquals("单一抽象方法仍须存在", 1, Hooks.Installer.class.getDeclaredMethods().length);
     }
 }

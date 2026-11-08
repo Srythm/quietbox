@@ -5,6 +5,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Activity;
+import android.content.Intent;
+
 import com.quietbox.app.Feature;
 import com.quietbox.app.HookState;
 
@@ -12,6 +15,7 @@ import org.junit.Test;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -144,6 +148,29 @@ public class HookKitTest {
 
     // ------------------------------------------------------------ 命中日志采样（F-117）
 
+    /**
+     * F-131：HookKit 的 skipVoid/constBool 必须返回匿名内部类 Hooker，不得是 lambda
+     * （lambda 会在 bootclasspath desugar 下失效，DESIGN §14 第 1 条）。
+     * 匿名类的名字形如 HookKit$1，lambda 则是 HookKit$$Lambda$xx；用 isSynthetic 区分。
+     */
+    @Test
+    public void hookKitHelpersReturnAnonymousHookersNotLambdas() {
+        XposedModule module = newModule();
+        Feature f = Feature.VIDEO_DEFAULT_MUTE;
+
+        XposedInterface.Hooker skip = HookKit.skipVoid(module, f, "probe");
+        XposedInterface.Hooker bool = HookKit.constBool(module, f, "probe", true);
+
+        assertFalse("skipVoid 不得返回 lambda（合成类）",
+                skip.getClass().isSynthetic());
+        assertFalse("constBool 不得返回 lambda（合成类）",
+                bool.getClass().isSynthetic());
+        assertTrue("skipVoid 必须是 HookKit 内的匿名内部类",
+                skip.getClass().getName().startsWith(HookKit.class.getName() + "$"));
+        assertTrue("constBool 必须是 HookKit 内的匿名内部类",
+                bool.getClass().getName().startsWith(HookKit.class.getName() + "$"));
+    }
+
     @Test
     public void hitLogSamplingWindowMatchesSiblings() {
         for (int i = 1; i <= 5; i++) {
@@ -177,6 +204,111 @@ public class HookKitTest {
         }
         assertEquals("命中计数每次都累加", before + calls, HookState.hitCount(f));
         assertEquals("日志必须按采样窗口输出，不得逐次刷屏", expected, logs.size());
+    }
+
+    /** finish()+额外动作+hit，且 proceed 恰好一次（F-066 共用模板）。 */
+    @Test
+    public void finishThenProceedRunsActionOnceAndProceedsExactlyOnce() throws Throwable {
+        Feature f = Feature.VIDEO_DEFAULT_MUTE;
+        FakeFinishingActivity activity = new FakeFinishingActivity();
+        AtomicInteger actionCalls = new AtomicInteger();
+        AtomicInteger proceedCalls = new AtomicInteger();
+        XposedModule module = newModule();
+
+        XposedInterface.Hooker hooker = HookKit.finishThenProceed(module, f, "onCreate(finish)",
+                new HookKit.ActivityAction() {
+                    @Override
+                    public void run(Activity act) {
+                        actionCalls.incrementAndGet();
+                    }
+                });
+        Object result = hooker.intercept(chainFake(activity, proceedCalls).proxy());
+
+        assertEquals("Activity 必须被 finish() 一次", 1, activity.finishCalls);
+        assertEquals("额外动作必须恰好执行一次", 1, actionCalls.get());
+        assertEquals("proceed 必须恰好一次（super.onCreate 仍由宿主执行）",
+                1, proceedCalls.get());
+        assertEquals("proceed 结果必须原样返回", "proceeded", result);
+    }
+
+    /** 无额外动作时模板同样 finish()+proceed 一次；非 Activity 也照样 proceed。 */
+    @Test
+    public void finishThenProceedWithoutActionStillProceedsOnce() throws Throwable {
+        Feature f = Feature.VIDEO_DEFAULT_MUTE;
+        AtomicInteger proceedCalls = new AtomicInteger();
+        XposedInterface.Hooker hooker =
+                HookKit.finishThenProceed(newModule(), f, "onCreate(finish)", null);
+
+        Object result = hooker.intercept(chainFake(new Object(), proceedCalls).proxy());
+
+        assertEquals("proceed 结果必须原样返回", "proceeded", result);
+        assertEquals("thisObject 非 Activity 时不得破坏原调用", 1, proceedCalls.get());
+    }
+
+    /** 额外动作抛异常时仍必须 proceed 恰好一次（异常 fail-open，DESIGN §14 第 2/3 条）。 */
+    @Test
+    public void finishThenProceedStillProceedsWhenActionThrows() throws Throwable {
+        Feature f = Feature.VIDEO_DEFAULT_MUTE;
+        AtomicInteger proceedCalls = new AtomicInteger();
+        XposedInterface.Hooker hooker = HookKit.finishThenProceed(newModule(), f, "onCreate(finish)",
+                new HookKit.ActivityAction() {
+                    @Override
+                    public void run(Activity act) {
+                        throw new IllegalStateException("action boom");
+                    }
+                });
+
+        Object result = hooker.intercept(
+                chainFake(new FakeFinishingActivity(), proceedCalls).proxy());
+
+        assertEquals("动作异常不得吞掉 proceed 结果", "proceeded", result);
+        assertEquals("动作异常时 proceed 仍必须恰好一次", 1, proceedCalls.get());
+    }
+
+    /** 记录 finish() 调用次数的 Activity 替身。 */
+    static class FakeFinishingActivity extends Activity {
+        int finishCalls;
+
+        @Override
+        public void finish() {
+            finishCalls++;
+        }
+
+        @Override
+        public Intent getIntent() {
+            return new Intent();
+        }
+    }
+
+    /** Chain 替身：getThisObject / proceed 计数。 */
+    private static ChainFake chainFake(Object self, AtomicInteger proceedCalls) {
+        return new ChainFake(self, proceedCalls);
+    }
+
+    private static final class ChainFake {
+        private final Object self;
+        private final AtomicInteger proceedCalls;
+
+        ChainFake(Object self, AtomicInteger proceedCalls) {
+            this.self = self;
+            this.proceedCalls = proceedCalls;
+        }
+
+        XposedInterface.Chain proxy() {
+            return (XposedInterface.Chain) Proxy.newProxyInstance(
+                    XposedInterface.class.getClassLoader(),
+                    new Class<?>[]{XposedInterface.Chain.class},
+                    (p, method, args) -> {
+                        if ("getThisObject".equals(method.getName())) {
+                            return self;
+                        }
+                        if ("proceed".equals(method.getName())) {
+                            proceedCalls.incrementAndGet();
+                            return "proceeded";
+                        }
+                        return null;
+                    });
+        }
     }
 
     private static XposedModule recordingModule(java.util.List<String> logs) {

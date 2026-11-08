@@ -2,7 +2,6 @@ package com.quietbox.app;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import org.junit.Test;
 import org.w3c.dom.Document;
@@ -144,23 +143,15 @@ public class PrefsFeatureConsistencyTest {
     }
 
     /**
-     * Gradle 单测的工作目录通常是 app/；从仓库根目录运行时回退到 app/src/...。
+     * Gradle 单测的工作目录可能是 app/、project/、QuietBox/ 或 D:\modules；
+     * 定位统一走 TestPaths，候选显式列出模块根/仓库根/app 三种假设。
      */
     private static File locatePrefsXml() {
-        File cwd = new File(System.getProperty("user.dir", "."));
-        File[] candidates = {
-                new File(cwd, "src/main/res/xml/prefs.xml"),
-                new File(cwd, "../app/src/main/res/xml/prefs.xml"),
-                new File(cwd, "app/src/main/res/xml/prefs.xml"),
-        };
-        for (File candidate : candidates) {
-            if (candidate.isFile()) {
-                return candidate;
-            }
-        }
-        fail("prefs.xml not found; cwd=" + cwd.getAbsolutePath()
-                + ", tried: " + Arrays.toString(candidates));
-        return null; // unreachable
+        return TestPaths.resolveFromCwd(
+                "src/main/res/xml/prefs.xml",
+                "app/src/main/res/xml/prefs.xml",
+                "project/app/src/main/res/xml/prefs.xml",
+                "QuietBox/project/app/src/main/res/xml/prefs.xml").toFile();
     }
 
     private static List<String> preferenceKeys() throws Exception {

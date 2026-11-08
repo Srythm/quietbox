@@ -3,7 +3,6 @@ package com.quietbox.app.anchor;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import org.junit.Test;
 
@@ -15,7 +14,6 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -26,6 +24,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.quietbox.app.Feature;
+import com.quietbox.app.TestPaths;
+import com.quietbox.app.VersionGate;
 
 /**
  * 锚点契约（纯 JVM）：anchors.json、生成的 AnchorKeys.java 与 hook 源码三方一致。
@@ -105,6 +105,21 @@ public class AnchorContractTest {
                 "tools/gen_anchors.py", json.get("generatedBy"));
         assertTrue("anchors 段必须是对象", json.get("anchors") instanceof Map);
         assertTrue("classes 段必须是对象", json.get("classes") instanceof Map);
+    }
+
+    /**
+     * 适配版本同时硬编码在 VersionGate 与 anchors.json：两处独立维护，生成器与
+     * 旧契约都不校验一致。这里把一致性钉成断言，改一处漏另一处时测试先失败
+     * （F-059）。
+     */
+    @Test
+    public void versionGateMatchesAnchorsMetadata() throws Exception {
+        Map<String, Object> json = loadAnchors();
+        assertEquals("VersionGate.SUPPORTED_VERSION 必须与 anchors.json 的 appVersion 一致",
+                VersionGate.SUPPORTED_VERSION, json.get("appVersion"));
+        assertEquals("VersionGate.SUPPORTED_VERSION_CODE 必须与 anchors.json 的 versionCode 一致",
+                VersionGate.SUPPORTED_VERSION_CODE,
+                ((Number) json.get("versionCode")).longValue());
     }
 
     /** 67 是 check-mounts.sh 的挂载点清单条目数；锚点表必须全覆盖。 */
@@ -239,22 +254,13 @@ public class AnchorContractTest {
         }
     }
 
-    /** 从测试工作目录向上找到 app/src/main/java（Gradle 单测 cwd 多为模块目录）。 */
+    /** 从测试工作目录向上找到 app/src/main/java：四种 cwd 的候选统一由 TestPaths 解析。 */
     private static Path mainSourceRoot() {
-        Path dir = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
-        while (dir != null) {
-            Path direct = dir.resolve("src").resolve("main").resolve("java");
-            if (Files.isDirectory(direct)) {
-                return direct;
-            }
-            Path module = dir.resolve("app").resolve("src").resolve("main").resolve("java");
-            if (Files.isDirectory(module)) {
-                return module;
-            }
-            dir = dir.getParent();
-        }
-        fail("找不到 app/src/main/java（cwd=" + System.getProperty("user.dir") + "）");
-        return null;
+        return TestPaths.resolveFromCwd(
+                "src/main/java",
+                "app/src/main/java",
+                "project/app/src/main/java",
+                "QuietBox/project/app/src/main/java");
     }
 
     private static List<Path> javaSources() throws Exception {

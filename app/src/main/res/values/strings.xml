@@ -61,6 +61,21 @@
     <string name="diag_skip">skip %1$s</string>
     <string name="diag_no_data">—</string>
 
+    <!-- 诊断导出/复制文案：所有用户可见文案都收在 strings.xml（DESIGN §10） -->
+    <string name="diag_export_title">导出诊断包</string>
+    <string name="diag_export_summary">系统分享诊断文本：版本/系统/框架 API/目标版本/功能状态/最近命中/最近崩溃</string>
+    <string name="diag_export_failed">诊断包导出失败</string>
+    <string name="diag_crash_category">最近崩溃</string>
+    <string name="diag_copy_crash_header">最近崩溃:</string>
+    <string name="diag_export_system">系统: Android %1$s (API %2$d)</string>
+    <string name="diag_export_framework">框架 API: %1$s</string>
+    <string name="diag_export_target">目标版本: %1$s</string>
+    <string name="diag_export_section_features">[功能状态]</string>
+    <string name="diag_export_section_hits">[最近命中]</string>
+    <string name="diag_export_section_crashes">[最近崩溃]</string>
+    <string name="diag_framework_unbound">未绑定</string>
+    <string name="diag_target_not_installed">未安装</string>
+
     <!-- 功能标题与说明 -->
     <string name="f_p0_1_splash_ad_skip_title">开屏广告跳过</string>
     <string name="f_p0_1_splash_ad_skip_summary">跳过开屏广告与冷启动占位画面</string>

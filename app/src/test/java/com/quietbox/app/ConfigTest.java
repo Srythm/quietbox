@@ -2,6 +2,7 @@ package com.quietbox.app;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -124,7 +125,7 @@ public class ConfigTest {
         assertEquals("损坏键回退编译期默认值",
                 Feature.SPLASH_AD_SKIP.defaultEnabled, c.enabled(Feature.SPLASH_AD_SKIP));
         assertTrue("strip 子开关仍要加载", c.stripXsecToken());
-        assertEquals("AB 覆盖表仍要加载", "1", c.abOverride("ab_key"));
+        assertEquals("AB 覆盖表仍要加载", "1", c.abOverrides().get("ab_key"));
         assertEquals("只告警损坏的那个键", 1, warnings.size());
         assertTrue("告警必须带 key 名", warnings.get(0).contains(Feature.SPLASH_AD_SKIP.key));
         assertTrue("告警必须带异常类型", warnings.get(0).contains("ClassCastException"));
@@ -143,7 +144,7 @@ public class ConfigTest {
 
         assertFalse(c.enabled(Feature.FEED_AD_FILTER));
         assertEquals(Config.DEFAULT_STRIP_XSEC_TOKEN, c.stripXsecToken());
-        assertEquals("1", c.abOverride("ab_key"));
+        assertEquals("1", c.abOverrides().get("ab_key"));
         assertEquals(1, warnings.size());
         assertTrue(warnings.get(0).contains(Config.KEY_STRIP_XSEC_TOKEN));
     }
@@ -168,13 +169,14 @@ public class ConfigTest {
 
     // ------------------------------------------------------------ config_version
 
-    /** 老配置没有 config_version：按 1 读取。 */
+    /** 老配置没有 config_version：不告警、不抛异常，功能开关照常加载。 */
     @Test
-    public void absentConfigVersionDefaultsToOne() {
+    public void absentConfigVersionDoesNotWarn() {
         Config c = Config.loadTolerant(new FakeSource(), (message, t) -> {
+            throw new AssertionError("缺 config_version 不应告警: " + message);
         });
-        assertEquals(1, c.configVersion());
-        assertEquals(Config.CURRENT_CONFIG_VERSION, c.configVersion());
+        assertEquals("缺 config_version 时功能开关走默认值",
+                Feature.FEED_AD_FILTER.defaultEnabled, c.enabled(Feature.FEED_AD_FILTER));
     }
 
     /** 存储版本高于模块支持：告警但不抛异常、不丢弃其它值，按兼容模式继续。 */
@@ -187,7 +189,6 @@ public class ConfigTest {
 
         Config c = Config.loadTolerant(source, (message, t) -> warnings.add(message));
 
-        assertEquals("高于支持的版本号要原样保留", 2, c.configVersion());
         assertFalse("仍然要加载其它配置", c.enabled(Feature.FEED_AD_FILTER));
         assertEquals(1, warnings.size());
         assertTrue("告警要包含存储版本", warnings.get(0).contains("v2"));
@@ -195,7 +196,7 @@ public class ConfigTest {
         assertTrue("告警要说明按兼容模式继续", warnings.get(0).contains("兼容模式"));
     }
 
-    /** config_version 键本身损坏：回退 1，其它值不受影响。 */
+    /** config_version 键本身损坏：其它值不受影响，只记一条告警。 */
     @Test
     public void malformedConfigVersionKeepsOtherValues() {
         FakeSource source = new FakeSource()
@@ -205,10 +206,25 @@ public class ConfigTest {
 
         Config c = Config.loadTolerant(source, (message, t) -> warnings.add(message));
 
-        assertEquals(Config.DEFAULT_CONFIG_VERSION, c.configVersion());
         assertFalse(c.enabled(Feature.FEED_AD_FILTER));
         assertEquals(1, warnings.size());
         assertTrue(warnings.get(0).contains(Config.KEY_CONFIG_VERSION));
+    }
+
+    /** abOverrides() 返回不可变副本：外部改写不得污染内部状态（F-056）。 */
+    @Test
+    public void abOverridesIsAnImmutableCopy() {
+        Config c = Config.loadTolerant(new FakeSource()
+                .putString(Config.KEY_AB_OVERRIDES, "ab_key=1\nother=2"),
+                (message, t) -> {
+                });
+
+        assertThrows("abOverrides() 必须是不可变副本，不允许外部 put",
+                UnsupportedOperationException.class,
+                () -> c.abOverrides().put("injected", "bad"));
+        assertEquals("外部改写尝试后内部覆盖表内容不变", "1", c.abOverrides().get("ab_key"));
+        assertEquals("外部改写后内部覆盖表仍有另一条", "2", c.abOverrides().get("other"));
+        assertFalse("外部注入的键不得出现", c.abOverrides().containsKey("injected"));
     }
 
     /** 纯 JVM 的 PrefSource 替身：按 key 返回值，可指定某个 key 读取抛异常。 */

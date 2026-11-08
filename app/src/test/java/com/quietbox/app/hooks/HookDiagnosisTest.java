@@ -152,7 +152,7 @@ public class HookDiagnosisTest {
         Feature f = Feature.UPDATE_DIALOG_BLOCK;
         XposedModule module = newModule((p, m, a) -> null);
         // 保存原 installer，结束后精确还原，避免影响 HookRegistryTest 的精确键集断言。
-        Hooks.Installer prev = Hooks.INSTALLERS.put(f, (m, cl, config, feature) -> {
+        Hooks.Installer prev = Hooks.INSTALLERS.put(f, (m, cl, config) -> {
             throw new IllegalStateException("installer boom");
         });
         try {

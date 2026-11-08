@@ -8,8 +8,15 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import com.quietbox.app.AbTest;
+import com.quietbox.app.Feature;
+import com.quietbox.app.HookState;
 
 import org.junit.Test;
+
+import java.lang.reflect.Proxy;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import io.github.libxposed.api.XposedModule;
 
 /**
  * AB 强开的类型兜底与状态回退规则（纯 JVM，不构造 Xposed 链）。
@@ -136,5 +143,74 @@ public class AbTestHooksTest {
             release.countDown();
             pool.shutdownNow();
         }
+    }
+
+    // ------------------------------------------------------------ 命中上报（F-061）
+
+    private static XposedModule newModule() {
+        io.github.libxposed.api.XposedInterface base =
+                (io.github.libxposed.api.XposedInterface) Proxy.newProxyInstance(
+                        io.github.libxposed.api.XposedInterface.class.getClassLoader(),
+                        new Class<?>[]{io.github.libxposed.api.XposedInterface.class},
+                        (proxy, method, args) -> null);
+        XposedModule module = new XposedModule() {
+        };
+        module.attachFramework(base, () -> {
+        });
+        return module;
+    }
+
+    /** Chain 替身：getArg(0) 为实验 key，proceed 返回原始结果并计数。 */
+    private static final class AbChainFake {
+        private final Object arg;
+        private final AtomicInteger proceedCalls = new AtomicInteger();
+
+        AbChainFake(Object arg) {
+            this.arg = arg;
+        }
+
+        io.github.libxposed.api.XposedInterface.Chain proxy() {
+            return (io.github.libxposed.api.XposedInterface.Chain) Proxy.newProxyInstance(
+                    io.github.libxposed.api.XposedInterface.class.getClassLoader(),
+                    new Class<?>[]{io.github.libxposed.api.XposedInterface.Chain.class},
+                    (p, method, args) -> {
+                        if ("getArg".equals(method.getName())) {
+                            return arg;
+                        }
+                        if ("proceed".equals(method.getName())) {
+                            proceedCalls.incrementAndGet();
+                            return "orig";
+                        }
+                        return null;
+                    });
+        }
+    }
+
+    @Test
+    public void valueHookReportsHitAndProceedsOnce() throws Throwable {
+        Feature f = Feature.AB_TEST_PANEL;
+        long before = HookState.hitCount(f);
+        AbChainFake chain = new AbChainFake("andr_some_experiment");
+
+        Object result = AbTestHooks.valueHook(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("原结果必须原样返回", "orig", result);
+        assertEquals("proceed 必须恰好一次", 1, chain.proceedCalls.get());
+        assertTrue("AB 读点命中必须接 HookKit.hit（EX-02 不再恒为 0）",
+                HookState.hitCount(f) > before);
+    }
+
+    @Test
+    public void stringHookReportsHitAndProceedsOnce() throws Throwable {
+        Feature f = Feature.AB_TEST_PANEL;
+        long before = HookState.hitCount(f);
+        AbChainFake chain = new AbChainFake("andr_some_experiment");
+
+        Object result = AbTestHooks.stringHook(newModule(), f).intercept(chain.proxy());
+
+        assertEquals("原结果必须原样返回", "orig", result);
+        assertEquals("proceed 必须恰好一次", 1, chain.proceedCalls.get());
+        assertTrue("ConfigCenter 读点命中必须接 HookKit.hit（EX-02 不再恒为 0）",
+                HookState.hitCount(f) > before);
     }
 }

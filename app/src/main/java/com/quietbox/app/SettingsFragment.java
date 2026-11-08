@@ -2,7 +2,6 @@ package com.quietbox.app;
 
 import android.app.Activity;
 import android.content.Context;
-import android.content.pm.PackageInfo;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -31,7 +30,6 @@ import io.github.libxposed.service.XposedService;
 public class SettingsFragment extends PreferenceFragmentCompat {
 
     private static final String TAG = "QuietBox";
-    private static final String TARGET = "com.xingin.xhs";
     private static final String PREF_RESET = "reset_defaults";
 
     /** 两次 refresh 的最小间隔，压掉 onCreatePreferences / onResume / 绑定回调三连。 */
@@ -65,8 +63,6 @@ public class SettingsFragment extends PreferenceFragmentCompat {
     private final WriteGate mWriteGate = new WriteGate();
     /** 恢复默认在途：期间禁用入口，避免重复提交覆盖在途事务。 */
     private boolean mResetInFlight;
-    /** versionName 在 Fragment 生命周期内不变，只读一次 PackageManager。 */
-    private String mVersionName;
 
     @Override
     public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
@@ -412,7 +408,7 @@ public class SettingsFragment extends PreferenceFragmentCompat {
     private void loadStatusAsync(XposedService service, boolean writable) {
         final XposedService bound = service;
         final boolean remoteWritable = writable;
-        final String version = versionName();
+        final String version = AppInfo.versionName(requireContext());
         final String targetVersion = shownTargetVersion();
         final Activity host = requireActivity();
 
@@ -428,7 +424,7 @@ public class SettingsFragment extends PreferenceFragmentCompat {
             }
             try {
                 List<String> scope = bound.getScope();
-                scoped = scope != null && scope.contains(TARGET);
+                scoped = scope != null && scope.contains(AppInfo.TARGET_PACKAGE);
             } catch (Throwable ignored) {
             }
             // getRunningTargets 是“当前真的被注入的进程”，只有它命中目标才能说明已激活。
@@ -553,7 +549,8 @@ public class SettingsFragment extends PreferenceFragmentCompat {
             }
             for (HookedTarget t : targets) {
                 String name = t.getProcessName();
-                if (name != null && (name.equals(TARGET) || name.startsWith(TARGET + ":"))) {
+                if (name != null && (name.equals(AppInfo.TARGET_PACKAGE)
+                        || name.startsWith(AppInfo.TARGET_PACKAGE + ":"))) {
                     return true;
                 }
             }
@@ -563,30 +560,11 @@ public class SettingsFragment extends PreferenceFragmentCompat {
     }
 
     private String targetVersion() {
-        try {
-            PackageInfo pi = requireContext().getPackageManager().getPackageInfo(TARGET, 0);
-            return pi.versionName;
-        } catch (Throwable t) {
-            return null;
-        }
+        return AppInfo.targetVersionName(requireContext());
     }
 
     private String shownTargetVersion() {
         String v = targetVersion();
         return v != null ? v : getString(R.string.status_unknown_version);
-    }
-
-    private String versionName() {
-        if (mVersionName != null) {
-            return mVersionName;
-        }
-        try {
-            String v = requireContext().getPackageManager()
-                    .getPackageInfo(requireContext().getPackageName(), 0).versionName;
-            mVersionName = v != null ? v : "?";
-        } catch (Throwable t) {
-            mVersionName = "?";
-        }
-        return mVersionName;
     }
 }

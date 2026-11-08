@@ -8,6 +8,7 @@ import android.util.Log;
 import com.quietbox.app.AbReportProvider;
 import com.quietbox.app.AbTest;
 import com.quietbox.app.AbTests;
+import com.quietbox.app.AbOverrides;
 import com.quietbox.app.Config;
 import com.quietbox.app.Feature;
 import com.quietbox.app.HookState;
@@ -16,7 +17,6 @@ import com.quietbox.app.anchor.AnchorKeys;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -83,8 +83,8 @@ public final class AbTestHooks {
         }
     }
 
-    /** oq.h 的返回值是已经按 Type 解析好的对象；按 AbTest 声明的类型转换强制值。 */
-    private static XposedInterface.Hooker valueHook(XposedModule module, Feature f) {
+    /** 包级可见：由 AbTestHooksTest 验证命中分支会接诊断上报（F-061）。 */
+    static XposedInterface.Hooker valueHook(XposedModule module, Feature f) {
         return new XposedInterface.Hooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
@@ -94,8 +94,12 @@ public final class AbTestHooks {
                     if (arg instanceof String) {
                         String key = (String) arg;
                         AbRuntime.observe(key, result);
+                        // 命中上报：EX-02 以前全程 0 hit，强开是否生效无从观测
+                        // （CONTRIBUTING「每个 hook 必须接诊断上报」）。
+                        HookKit.hit(module, f, "ABStore#getValue");
                         AbTest forced = AbRuntime.override(key);
                         if (forced != null) {
+                            HookKit.hit(module, f, "ABStore#override");
                             return coerce(forced, result);
                         }
                     }
@@ -112,7 +116,8 @@ public final class AbTestHooks {
      * 因此这里喂回去的也必须是 Gson 能按目标类型解析的字面量，否则解析失败
      * 会静默回落到默认值。
      */
-    private static XposedInterface.Hooker stringHook(XposedModule module, Feature f) {
+    /** 包级可见：由 AbTestHooksTest 验证命中分支会接诊断上报（F-061）。 */
+    static XposedInterface.Hooker stringHook(XposedModule module, Feature f) {
         return new XposedInterface.Hooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
@@ -122,10 +127,12 @@ public final class AbTestHooks {
                     if (arg instanceof String) {
                         String key = (String) arg;
                         AbRuntime.observe(key, result);
+                        HookKit.hit(module, f, "ConfigCenter#getValue");
                         AbTest forced = AbRuntime.override(key);
                         if (forced != null) {
                             String literal = forced.forcedLiteral();
                             if (literal != null) {
+                                HookKit.hit(module, f, "ConfigCenter#override");
                                 return literal;
                             }
                         }
@@ -345,7 +352,7 @@ public final class AbTestHooks {
                             Log.i(TAG, "EX-02 provider pull enabled=" + enabled + " raw=" + raw);
                         }
                         Map<String, String> next = enabled
-                                ? parse(raw)
+                                ? AbOverrides.parse(raw)
                                 : Collections.emptyMap();
                         apply(enabled, next);
                         return;
@@ -368,7 +375,7 @@ public final class AbTestHooks {
             try {
                 boolean enabled = sp.getBoolean(Feature.AB_TEST_PANEL.key, false);
                 apply(enabled, enabled
-                        ? parse(sp.getString(Config.KEY_AB_OVERRIDES, ""))
+                        ? AbOverrides.parse(sp.getString(Config.KEY_AB_OVERRIDES, ""))
                         : Collections.emptyMap());
             } catch (Throwable ignored) {
                 // 读取失败时保持上一次状态，不打断宿主。
@@ -464,25 +471,6 @@ public final class AbTestHooks {
             } catch (Throwable ignored) {
             }
             return null;
-        }
-
-        private static Map<String, String> parse(String raw) {
-            Map<String, String> map = new LinkedHashMap<>();
-            if (raw == null) {
-                return map;
-            }
-            for (String line : raw.split("\n")) {
-                int eq = line.indexOf('=');
-                if (eq <= 0) {
-                    continue;
-                }
-                String key = line.substring(0, eq).trim();
-                String value = line.substring(eq + 1).trim();
-                if (!key.isEmpty() && !value.isEmpty()) {
-                    map.put(key, value);
-                }
-            }
-            return map;
         }
     }
 }

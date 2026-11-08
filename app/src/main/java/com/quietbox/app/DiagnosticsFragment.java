@@ -160,10 +160,9 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
         });
         screen.addPreference(copy);
 
-        // 新文案无法进 strings.xml（不在本次修复的文件清单内），用字面量并在此说明。
         Preference export = new Preference(requireContext());
-        export.setTitle("导出诊断包");
-        export.setSummary("系统分享诊断文本：版本/系统/框架 API/目标版本/功能状态/最近命中/最近崩溃");
+        export.setTitle(R.string.diag_export_title);
+        export.setSummary(R.string.diag_export_summary);
         export.setOnPreferenceClickListener(p -> {
             exportDiagnostics();
             return true;
@@ -181,7 +180,7 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
             }
             if (category == null) {
                 category = new PreferenceCategory(requireContext());
-                category.setTitle("最近崩溃");
+                category.setTitle(R.string.diag_crash_category);
                 screen.addPreference(category);
             }
             category.addPreference(crashRow(crash));
@@ -276,9 +275,10 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
                     Intent send = new Intent(Intent.ACTION_SEND);
                     send.setType("text/plain");
                     send.putExtra(Intent.EXTRA_TEXT, data.exportText);
-                    startActivity(Intent.createChooser(send, "导出诊断包"));
+                    startActivity(Intent.createChooser(send,
+                            getString(R.string.diag_export_title)));
                 } catch (Throwable ignored) {
-                    Toast.makeText(app, "诊断包导出失败", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(app, R.string.diag_export_failed, Toast.LENGTH_SHORT).show();
                 }
             });
         });
@@ -315,28 +315,61 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
             }
         }
 
-        String version = versionName(app);
-        String exportHeader = app.getString(R.string.app_name) + " " + version + '\n'
-                + "系统: Android " + Build.VERSION.RELEASE
-                + " (API " + Build.VERSION.SDK_INT + ")\n"
-                + "框架 API: " + frameworkApi() + '\n'
-                + "目标版本: " + targetVersion(app) + '\n'
-                + app.getString(R.string.diag_header, refreshTime);
-        String exportText = joinExportText(exportHeader, featureLines, hitLines,
-                joinCrashText(crashes), app.getString(R.string.diag_no_data));
+        String version = AppInfo.versionName(app);
+        String target = AppInfo.targetVersion(app);
+        String targetText = target != null ? target
+                : app.getString(R.string.diag_target_not_installed);
+        // 「复制」与「分享」共用同一组抬头行与 featureLines，导出只在其上追加系统信息
+        // 并交给 joinExportText 追加分段（ReportProtocolTest 锁定分段顺序）。
+        List<String> headerLines = new ArrayList<>();
+        headerLines.add(app.getString(R.string.app_name) + " " + version);
+        headerLines.add(app.getString(R.string.diag_export_system, Build.VERSION.RELEASE,
+                Build.VERSION.SDK_INT));
+        headerLines.add(app.getString(R.string.diag_export_framework, frameworkApi(app)));
+        headerLines.add(app.getString(R.string.diag_export_target, targetText));
+        headerLines.add(app.getString(R.string.diag_header, refreshTime));
+        String exportText = joinExportText(joinLines(headerLines), featureLines, hitLines,
+                joinCrashText(crashes), app.getString(R.string.diag_no_data),
+                app.getString(R.string.diag_export_section_features),
+                app.getString(R.string.diag_export_section_hits),
+                app.getString(R.string.diag_export_section_crashes));
 
-        StringBuilder copy = new StringBuilder();
-        copy.append(app.getString(R.string.app_name)).append(' ').append(version).append('\n');
-        copy.append(app.getString(R.string.diag_header, refreshTime)).append('\n');
-        for (String line : featureLines) {
-            copy.append(line).append('\n');
-        }
-        String crashBlock = joinCrashText(crashes);
-        if (!crashBlock.isEmpty()) {
-            copy.append("最近崩溃:\n").append(crashBlock);
-        }
+        List<String> copyHeader = new ArrayList<>();
+        copyHeader.add(app.getString(R.string.app_name) + " " + version);
+        copyHeader.add(app.getString(R.string.diag_header, refreshTime));
+        String copyText = joinReportText(joinLines(copyHeader), featureLines,
+                joinCrashText(crashes), app.getString(R.string.diag_copy_crash_header));
         return new DiagData(refreshTime, summaries, hasData, crashes,
-                exportText, copy.toString());
+                exportText, copyText);
+    }
+
+    /** 把一组行按 '\n' 连接（不追加尾换行），供导出/复制共用同一组抬头文件。 */
+    static String joinLines(List<String> lines) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : lines) {
+            if (sb.length() > 0) {
+                sb.append('\n');
+            }
+            sb.append(line);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 「复制」文本：抬头 + 全部功能状态行 + 最近崩溃段。与「分享」共用 collect()
+     * 里同一份 featureLines 与 crashBlock，新增诊断字段只改一处；静态包级可见供
+     * JVM 单测锁定拼装结果。
+     */
+    static String joinReportText(String headerBlock, List<String> featureLines,
+            String crashBlock, String crashHeader) {
+        StringBuilder sb = new StringBuilder(headerBlock).append('\n');
+        for (String line : featureLines) {
+            sb.append(line).append('\n');
+        }
+        if (!crashBlock.isEmpty()) {
+            sb.append(crashHeader).append('\n').append(crashBlock);
+        }
+        return sb.toString();
     }
 
     /**
@@ -431,16 +464,18 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
      * 导出文本的纯拼装（无 Android 依赖，静态包级可见供 JVM 单测锁定关键段，
      * 见 ReportProtocolTest）：headerBlock 为版本/系统/框架 API/目标版本/数据时间，
      * 功能状态/最近命中/最近崩溃三个段按固定顺序追加，空段用 noData 占位。
+     * 段名由调用方从 strings.xml 传入，Java 不写中文字面量（DESIGN §10）。
      */
     static String joinExportText(String headerBlock, List<String> featureLines,
-            List<String> hitLines, String crashBlock, String noData) {
+            List<String> hitLines, String crashBlock, String noData,
+            String featuresSection, String hitsSection, String crashesSection) {
         StringBuilder sb = new StringBuilder();
         sb.append(headerBlock);
-        sb.append("\n[功能状态]\n");
+        sb.append('\n').append(featuresSection).append('\n');
         for (String line : featureLines) {
             sb.append(line).append('\n');
         }
-        sb.append("\n[最近命中]\n");
+        sb.append('\n').append(hitsSection).append('\n');
         if (hitLines.isEmpty()) {
             sb.append(noData).append('\n');
         } else {
@@ -448,30 +483,19 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
                 sb.append(line).append('\n');
             }
         }
-        sb.append("\n[最近崩溃]\n");
+        sb.append('\n').append(crashesSection).append('\n');
         sb.append(crashBlock.isEmpty() ? noData + '\n' : crashBlock);
         return sb.toString();
     }
 
     /** Xposed 框架 API 版本（模块 App 进程经 XposedService 绑定得知）；未绑定返回提示。 */
-    private static String frameworkApi() {
+    private static String frameworkApi(Context app) {
         try {
             io.github.libxposed.service.XposedService service = ServiceBridge.get();
-            return service != null ? String.valueOf(service.getApiVersion()) : "未绑定";
+            return service != null ? String.valueOf(service.getApiVersion())
+                    : app.getString(R.string.diag_framework_unbound);
         } catch (Throwable t) {
             return "?";
-        }
-    }
-
-    /** 目标应用（小红书）版本；未安装或查询失败返回提示。 */
-    private static String targetVersion(Context context) {
-        try {
-            android.content.pm.PackageInfo info = context.getPackageManager()
-                    .getPackageInfo("com.xingin.xhs", 0);
-            String version = info.versionName != null ? info.versionName : "?";
-            return version + " (" + info.versionCode + ")";
-        } catch (Throwable t) {
-            return "未安装";
         }
     }
 
@@ -488,16 +512,6 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
             case EX:
             default:
                 return R.string.group_ex;
-        }
-    }
-
-    private static String versionName(Context context) {
-        try {
-            String v = context.getPackageManager()
-                    .getPackageInfo(context.getPackageName(), 0).versionName;
-            return v != null ? v : "?";
-        } catch (Throwable t) {
-            return "?";
         }
     }
 

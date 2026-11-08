@@ -21,7 +21,8 @@ import io.github.libxposed.api.XposedModuleInterface;
 public class QuietBoxModule extends XposedModule {
 
     static final String TAG = "QuietBox";
-    static final String TARGET_PACKAGE = "com.xingin.xhs";
+    /** 编译期常量：引用同包 AppInfo 的统一定义，宿主进程不会因此加载额外类。 */
+    static final String TARGET_PACKAGE = AppInfo.TARGET_PACKAGE;
 
     /** 每个进程只安装一次；onPackageReady 对进程内每个已加载包都会回调。 */
     private static final AtomicBoolean sInstalled = new AtomicBoolean();

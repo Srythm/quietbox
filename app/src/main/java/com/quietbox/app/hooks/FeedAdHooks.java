@@ -77,7 +77,7 @@ final class FeedAdHooks {
 
         Method insert = HookKit.findAnchorMethod(module, f, cl,
                 AnchorKeys.FEED_AD_INSERT_GUARD, true);
-        HookKit.install(module, f, "hgd.m0.g0", insert, new XposedInterface.Hooker() {
+        HookKit.install(module, f, "feedAdInsert", insert, new XposedInterface.Hooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
                 try {
@@ -87,7 +87,7 @@ final class FeedAdHooks {
                         return null;
                     }
                 } catch (Throwable t) {
-                    HookKit.error(module, f.id + " intercept error hgd.m0.g0", t);
+                    HookKit.error(module, f.id + " intercept error feedAdInsert", t);
                 }
                 return chain.proceed();
             }
@@ -96,17 +96,17 @@ final class FeedAdHooks {
 
     /** 普通信息流广告：服务端下发 isAd，只能在列表层过滤。 */
     private static void installListFilter(XposedModule module, ClassLoader cl, Feature f) {
-        HookKit.install(module, f, "hgd.m0.S",
+        HookKit.install(module, f, "feedAdAppendFilter",
                 HookKit.findAnchorMethod(module, f, cl, AnchorKeys.FEED_AD_APPEND_FILTER, true),
-                dropAdsHook(module, f, "hgd.m0.S", 0));
-        HookKit.install(module, f, "hgd.m0.C0",
+                dropAdsHook(module, f, "feedAdAppendFilter", 0));
+        HookKit.install(module, f, "feedAdRefreshFilter",
                 HookKit.findAnchorMethod(module, f, cl, AnchorKeys.FEED_AD_REFRESH_FILTER, true),
-                dropAdsHook(module, f, "hgd.m0.C0", 0));
+                dropAdsHook(module, f, "feedAdRefreshFilter", 0));
         // Pd(boolean isRefresh, ArrayList pageData, 回调)：9.51.0 起列表从参数 0 移到参数 1
         // （参数 0 变成 isRefresh 布尔），列表经回调 onSuccess 交给 nfd.m0.C0。
-        HookKit.install(module, f, "bgd.s.Pd",
+        HookKit.install(module, f, "feedAdPagerFilter",
                 HookKit.findAnchorMethod(module, f, cl, AnchorKeys.FEED_AD_PAGER_FILTER, true),
-                dropAdsHook(module, f, "bgd.s.Pd", 1));
+                dropAdsHook(module, f, "feedAdPagerFilter", 1));
     }
 
     /** 在调用原方法前，把入参 List 里的广告项删掉。 */

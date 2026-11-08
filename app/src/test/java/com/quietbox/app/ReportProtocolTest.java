@@ -340,7 +340,7 @@ public class ReportProtocolTest {
                 Collections.singletonList("AD-01 启动页开屏广告跳过: registered · hit 3 · skip —"),
                 Collections.singletonList("AD-01 启动页开屏广告跳过: hit 3"),
                 "crash0 1000|main|java.lang.NullPointerException|at a.B.d(B.java:1)|at e.F.h(F.java:2)\n",
-                "—");
+                "—", "[功能状态]", "[最近命中]", "[最近崩溃]");
 
         assertTrue(text.contains("静盒 0.9.2"));
         assertTrue("必须含系统版本段", text.contains("系统: Android 15 (API 35)"));
@@ -362,12 +362,25 @@ public class ReportProtocolTest {
     public void exportTextUsesNoDataMarkerForEmptySections() {
         String text = DiagnosticsFragment.joinExportText("静盒 0.9.2",
                 Arrays.asList("AD-01 启动页开屏广告跳过: —"),
-                Collections.emptyList(), "", "—");
+                Collections.emptyList(), "", "—", "[功能状态]", "[最近命中]", "[最近崩溃]");
 
         assertTrue(text.contains("[功能状态]\nAD-01 启动页开屏广告跳过: —\n"));
         assertTrue("最近命中无数据必须占位", text.contains("[最近命中]\n—\n"));
         assertTrue("最近崩溃无数据必须占位", text.contains("[最近崩溃]\n—\n"));
         assertFalse("无崩溃时不得出现 crash 行", text.contains("crash0"));
+    }
+
+    /** 段名由调用方传入：Java 不再写死中文字面量，换资源即可换段名（F-057）。 */
+    @Test
+    public void exportTextUsesCallerSuppliedSectionLabels() {
+        String text = DiagnosticsFragment.joinExportText("H",
+                Collections.singletonList("L"), Collections.emptyList(), "", "—",
+                "[FEATURES]", "[HITS]", "[CRASHES]");
+
+        assertTrue("功能状态段名必须来自调用方", text.contains("[FEATURES]\nL\n"));
+        assertTrue("最近命中段名必须来自调用方", text.contains("[HITS]\n—\n"));
+        assertTrue("最近崩溃段名必须来自调用方", text.contains("[CRASHES]\n—\n"));
+        assertFalse("旧的中文字面量不得再被写死在拼装逻辑里", text.contains("[功能状态]"));
     }
 
     @Test

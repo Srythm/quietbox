@@ -1,6 +1,5 @@
 package com.quietbox.app;
 
-import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.View;
 
@@ -54,7 +53,7 @@ public class MainActivity extends AppCompatActivity {
 
         mToolbar = findViewById(R.id.toolbar);
         mToolbar.setTitle(R.string.app_name);
-        mToolbar.setSubtitle(getString(R.string.app_subtitle, versionName()));
+        mToolbar.setSubtitle(getString(R.string.app_subtitle, AppInfo.versionName(this)));
 
         mBottomNav = findViewById(R.id.bottom_nav);
 
@@ -235,14 +234,5 @@ public class MainActivity extends AppCompatActivity {
         // 清掉对 Activity 的静态引用，防止退出后 binder 回调仍持有已销毁实例。
         ServiceBridge.setOnBound(null);
         super.onDestroy();
-    }
-
-    private String versionName() {
-        try {
-            String v = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-            return v != null ? v : "?";
-        } catch (PackageManager.NameNotFoundException e) {
-            return "?";
-        }
     }
 }

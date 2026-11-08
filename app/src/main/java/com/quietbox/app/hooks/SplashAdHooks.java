@@ -59,10 +59,10 @@ final class SplashAdHooks {
 
     /** 与 FULLSCREEN_KEYS 一一对应的诊断 label，保持旧日志里的类名。 */
     private static final String[] FULLSCREEN_LABELS = {
-            "SplashAdActivity$a#a",
-            "SplashDynamicActivity$a#a",
-            "SplashCNYActivity$a#a",
-            "InterstitialAdsActivity$a#a",
+            "splashActivityLauncher",
+            "splashDynamicLauncher",
+            "splashCnyLauncher",
+            "splashInterstitialLauncher",
     };
 
     private SplashAdHooks() {
@@ -97,7 +97,7 @@ final class SplashAdHooks {
     private static void installFullScreen(XposedModule module, ClassLoader cl, Feature f) {
         // ui.a#d 是 Path B 唯一出口，签名中的 SplashAd 由 anchors.json 精确描述。
         Method d = HookKit.findAnchorMethod(module, f, cl, AnchorKeys.SPLASH_FULLSCREEN_ENTRY, true);
-        HookKit.install(module, f, "ui.a#d", d, HookKit.skipVoid(module, f, "ui.a#d"));
+        HookKit.install(module, f, "splashFullscreenEntry", d, HookKit.skipVoid(module, f, "splashFullscreenEntry"));
 
         for (int i = 0; i < FULLSCREEN_KEYS.length; i++) {
             Method a = HookKit.findAnchorMethod(module, f, cl, FULLSCREEN_KEYS[i], false);
@@ -124,7 +124,7 @@ final class SplashAdHooks {
             HookKit.warn(module, f.id + " skip: SplashAdPlaceHolderView#onCreateView not found");
             return;
         }
-        HookKit.install(module, f, "SplashAdPlaceHolderView#onCreateView", m,
+        HookKit.install(module, f, "splashPlaceholderView", m,
                 new XposedInterface.Hooker() {
                     @Override
                     public Object intercept(XposedInterface.Chain chain) throws Throwable {

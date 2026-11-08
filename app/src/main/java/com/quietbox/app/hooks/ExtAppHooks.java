@@ -69,11 +69,11 @@ final class ExtAppHooks {
                     AnchorKeys.EXT_APP_WEBVIEW_CONVERGE, false);
             if (b != null) {
                 if (hasAdRedirectInfoParam(b)) {
-                    HookKit.install(module, f, "j9e.i0#b", b, convergeHook(module, f));
+                    HookKit.install(module, f, "extAppWebviewConverge", b, convergeHook(module, f));
                 } else {
                     HookKit.warn(module, f.id
-                            + " skip: j9e.i0#b 第 3 参非 AdRedirectInfo，汇聚点不安装");
-                    HookState.note(f, "j9e.i0#b 形状不符，未安装");
+                            + " skip: extAppWebviewConverge 第 3 参非 AdRedirectInfo，汇聚点不安装");
+                    HookState.note(f, "extAppWebviewConverge 形状不符，未安装");
                 }
             }
 

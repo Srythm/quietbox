@@ -57,7 +57,7 @@ public final class StatusProvider extends ContentProvider {
     public static final String EXTRA_SYNC = "sync";
 
     /** 唯一允许写入诊断数据的宿主包名。 */
-    private static final String TARGET_PACKAGE = "com.xingin.xhs";
+    private static final String TARGET_PACKAGE = AppInfo.TARGET_PACKAGE;
 
     private static final int MAX_ITEMS = 800;
 

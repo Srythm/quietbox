@@ -21,10 +21,15 @@ public final class Hooks {
 
     private static final String TAG = "QuietBox";
 
-    /** 单个 Feature 的安装动作；module/cl/config/feature 统一由 installOne 传入。 */
+    /**
+     * 单个 Feature 的安装动作；module/cl/config 统一由 installOne 传入。
+     * 原先还带一个 Feature feature 形参，但 23 个 installer 全部忽略它（各
+     * XxxHooks.install 内部自己声明 Feature），属于未使用的多余参数，已删除。
+     * 记账用的 Feature 由 installAll 的循环变量直接持有，不经这里传递。
+     */
     @FunctionalInterface
     interface Installer {
-        void install(XposedModule module, ClassLoader cl, Config config, Feature feature);
+        void install(XposedModule module, ClassLoader cl, Config config);
     }
 
     /**
@@ -42,52 +47,52 @@ public final class Hooks {
         EnumMap<Feature, Installer> map = new EnumMap<>(Feature.class);
 
         map.put(Feature.SPLASH_AD_SKIP,
-                (module, cl, config, f) -> SplashAdHooks.install(module, cl));
+                (module, cl, config) -> SplashAdHooks.install(module, cl));
         map.put(Feature.FEED_AD_FILTER,
-                (module, cl, config, f) -> FeedAdHooks.install(module, cl));
+                (module, cl, config) -> FeedAdHooks.install(module, cl));
         map.put(Feature.COMMENT_AD_FILTER,
-                (module, cl, config, f) -> CommentAdHooks.install(module, cl));
+                (module, cl, config) -> CommentAdHooks.install(module, cl));
         map.put(Feature.UPDATE_DIALOG_BLOCK,
-                (module, cl, config, f) -> UpdateDialogHooks.install(module, cl));
+                (module, cl, config) -> UpdateDialogHooks.install(module, cl));
         map.put(Feature.SCREENSHOT_DETECT_OFF,
-                (module, cl, config, f) -> ScreenShotHooks.install(module, cl));
+                (module, cl, config) -> ScreenShotHooks.install(module, cl));
         map.put(Feature.EXT_APP_BLOCK,
-                (module, cl, config, f) -> ExtAppHooks.install(module, cl));
+                (module, cl, config) -> ExtAppHooks.install(module, cl));
         map.put(Feature.COPY_LINK_SANITIZE,
-                (module, cl, config, f) -> CopyLinkHooks.install(
+                (module, cl, config) -> CopyLinkHooks.install(
                         module, cl, config.stripXsecToken()));
         map.put(Feature.WATERMARK_POLICY,
-                (module, cl, config, f) -> WatermarkHooks.install(module, cl));
+                (module, cl, config) -> WatermarkHooks.install(module, cl));
         map.put(Feature.LIVE_PHOTO_WATERMARK,
-                (module, cl, config, f) -> LivePhotoWatermarkHooks.install(module, cl));
+                (module, cl, config) -> LivePhotoWatermarkHooks.install(module, cl));
         map.put(Feature.FORCE_SAVE,
-                (module, cl, config, f) -> ForceSaveHooks.install(module, cl));
+                (module, cl, config) -> ForceSaveHooks.install(module, cl));
         map.put(Feature.AUTOPLAY_PREFERENCE,
-                (module, cl, config, f) -> AutoPlayHooks.install(module, cl));
+                (module, cl, config) -> AutoPlayHooks.install(module, cl));
         map.put(Feature.SEARCH_AD_FILTER,
-                (module, cl, config, f) -> SearchAdHooks.install(module, cl));
+                (module, cl, config) -> SearchAdHooks.install(module, cl));
         map.put(Feature.NOTE_DETAIL_AD_BANNER,
-                (module, cl, config, f) -> NoteDetailAdHooks.install(module, cl));
+                (module, cl, config) -> NoteDetailAdHooks.install(module, cl));
         map.put(Feature.NOTE_UNAVAILABLE_VIEW,
-                (module, cl, config, f) -> NoteUnavailableHooks.install(module, cl));
+                (module, cl, config) -> NoteUnavailableHooks.install(module, cl));
         map.put(Feature.SCORE_GUIDE_BLOCK,
-                (module, cl, config, f) -> ScoreGuideHooks.install(module, cl));
+                (module, cl, config) -> ScoreGuideHooks.install(module, cl));
         map.put(Feature.PUSH_GUIDE_BLOCK,
-                (module, cl, config, f) -> PushGuideHooks.install(module, cl));
+                (module, cl, config) -> PushGuideHooks.install(module, cl));
         map.put(Feature.CONTENT_RATING_BLOCK,
-                (module, cl, config, f) -> ContentRatingHooks.install(module, cl));
+                (module, cl, config) -> ContentRatingHooks.install(module, cl));
         map.put(Feature.CONTACT_SYNC_OFF,
-                (module, cl, config, f) -> ContactSyncHooks.install(module, cl));
+                (module, cl, config) -> ContactSyncHooks.install(module, cl));
         map.put(Feature.GOODS_COMMENT_BLOCK,
-                (module, cl, config, f) -> GoodsCommentHooks.install(module, cl));
+                (module, cl, config) -> GoodsCommentHooks.install(module, cl));
         map.put(Feature.FEED_LIVE_CARD_BLOCK,
-                (module, cl, config, f) -> FeedCardHooks.install(module, cl, config));
+                (module, cl, config) -> FeedCardHooks.install(module, cl, config));
         map.put(Feature.FEED_GOODS_CARD_BLOCK,
-                (module, cl, config, f) -> FeedCardHooks.install(module, cl, config));
+                (module, cl, config) -> FeedCardHooks.install(module, cl, config));
         map.put(Feature.FEED_VOTE_CARD_BLOCK,
-                (module, cl, config, f) -> FeedCardHooks.install(module, cl, config));
+                (module, cl, config) -> FeedCardHooks.install(module, cl, config));
         map.put(Feature.AB_TEST_PANEL,
-                (module, cl, config, f) -> AbTestHooks.install(module, cl));
+                (module, cl, config) -> AbTestHooks.install(module, cl));
 
         return map;
     }
@@ -157,7 +162,7 @@ public final class Hooks {
                 }
                 return;
             }
-            installer.install(module, cl, config, f);
+            installer.install(module, cl, config);
         } catch (Throwable t) {
             module.log(Log.ERROR, TAG, f.id + " install threw", t);
             // 安装阶段整段抛出属于主链路失效：记 critical，让失败横幅可见。

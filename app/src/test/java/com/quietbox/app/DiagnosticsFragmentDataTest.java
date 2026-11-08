@@ -7,6 +7,8 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -101,5 +103,45 @@ public class DiagnosticsFragmentDataTest {
         assertTrue(crashes[2].contains("IllegalStateException"));
         assertTrue(DiagnosticsFragment.readRawStatus(sp)
                 .containsKey(Feature.FEED_AD_FILTER));
+    }
+
+    // ------------------------------------------------------------ 复制/分享共用拼装（F-058）
+
+    @Test
+    public void joinLinesKeepsOrderWithoutTrailingNewline() {
+        assertEquals("抬头文件按给定顺序用 \\n 连接且不加尾换行",
+                "静盒 0.9.8\n数据来自目标进程回传 · 刷新时间 12:00",
+                DiagnosticsFragment.joinLines(
+                        Arrays.asList("静盒 0.9.8", "数据来自目标进程回传 · 刷新时间 12:00")));
+        assertEquals("", DiagnosticsFragment.joinLines(Collections.emptyList()));
+    }
+
+    @Test
+    public void copyTextSharesFeatureLinesWithExport() {
+        String header = DiagnosticsFragment.joinLines(
+                Arrays.asList("静盒 0.9.8", "数据来自目标进程回传 · 刷新时间 12:00"));
+        java.util.List<String> features = Arrays.asList(
+                "AD-01 开屏广告跳过: registered", "AD-02 信息流广告过滤: —");
+
+        String copy = DiagnosticsFragment.joinReportText(header, features, "", "最近崩溃:");
+
+        assertEquals("复制文本必须逐行含全部功能状态，且与分享共用同一份 featureLines",
+                header + "\nAD-01 开屏广告跳过: registered\nAD-02 信息流广告过滤: —\n", copy);
+        assertFalse("无崩溃时不得出现崩溃段", copy.contains("最近崩溃"));
+    }
+
+    @Test
+    public void copyTextAppendsCrashBlockWithSharedHeader() {
+        String header = DiagnosticsFragment.joinLines(
+                Arrays.asList("静盒 0.9.8", "数据来自目标进程回传 · 刷新时间 12:00"));
+        String crash = "crash0 1000|main|java.lang.RuntimeException\n";
+
+        String copy = DiagnosticsFragment.joinReportText(header,
+                Collections.singletonList("AD-01 开屏广告跳过: registered"),
+                crash, "最近崩溃:");
+
+        assertTrue("复制文本必须以共用抬头开头", copy.startsWith(header + "\nAD-01"));
+        assertTrue("有崩溃时必须追加崩溃段名与 crash 行",
+                copy.contains("最近崩溃:\ncrash0 1000|main|java.lang.RuntimeException\n"));
     }
 }

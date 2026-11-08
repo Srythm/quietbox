@@ -1,7 +1,6 @@
 package com.quietbox.app;
 
 import android.content.Intent;
-import android.content.pm.PackageInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
@@ -30,7 +29,6 @@ import androidx.preference.PreferenceViewHolder;
 public class AboutFragment extends PreferenceFragmentCompat {
 
     private static final String CURRENT_APPLICATION_ID = "io.github.yigenhuobah.quietbox";
-    private static final String TARGET_PACKAGE = "com.xingin.xhs";
     private static final String SOURCE_URL = "https://github.com/yigenhuobah/quietbox";
     private static final String LICENSE_URL = SOURCE_URL + "/blob/main/LICENSE";
 
@@ -65,13 +63,14 @@ public class AboutFragment extends PreferenceFragmentCompat {
         setPreferenceScreen(screen);
 
         Preference module = info(R.string.app_name,
-                getString(R.string.about_version, versionName(), versionCode()));
+                getString(R.string.about_version, AppInfo.versionName(requireContext()),
+                        AppInfo.versionCode(requireContext())));
         module.setSelectable(false);
         screen.addPreference(module);
 
         Preference target = info(R.string.about_target,
                 getString(R.string.about_target_value, getString(R.string.app_target_name),
-                        TARGET_PACKAGE, VersionGate.SUPPORTED_VERSION));
+                        AppInfo.TARGET_PACKAGE, VersionGate.SUPPORTED_VERSION));
         target.setSelectable(false);
         screen.addPreference(target);
 
@@ -168,26 +167,6 @@ public class AboutFragment extends PreferenceFragmentCompat {
         } catch (Throwable t) {
             Toast.makeText(requireContext(), R.string.action_open_failed,
                     Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private String versionName() {
-        try {
-            String v = requireContext().getPackageManager()
-                    .getPackageInfo(requireContext().getPackageName(), 0).versionName;
-            return v != null ? v : "?";
-        } catch (Throwable t) {
-            return "?";
-        }
-    }
-
-    private int versionCode() {
-        try {
-            PackageInfo pi = requireContext().getPackageManager()
-                    .getPackageInfo(requireContext().getPackageName(), 0);
-            return (int) pi.getLongVersionCode();
-        } catch (Throwable t) {
-            return 0;
         }
     }
 }

@@ -116,12 +116,12 @@ public final class AbReportProvider extends ContentProvider {
         String[] pkgs = getContext().getPackageManager().getPackagesForUid(uid);
         if (pkgs != null) {
             for (String p : pkgs) {
-                if ("com.xingin.xhs".equals(p)) {
+                if (AppInfo.TARGET_PACKAGE.equals(p)) {
                     return true;
                 }
             }
         }
-        return "com.xingin.xhs".equals(getCallingPackage());
+        return AppInfo.TARGET_PACKAGE.equals(getCallingPackage());
     }
 
     @Override
