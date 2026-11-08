@@ -32,6 +32,10 @@ fi
 [ "$JAVA_MAJOR" -eq 21 ] || fail "java must be 21.x, got: $JAVA_FIRST_LINE"
 info "java: $JAVA_FIRST_LINE"
 
+# ------------------------------------------------------- Gradle Wrapper pins
+bash tools/check-wrapper.sh
+info "gradle wrapper pins: OK"
+
 # ------------------------------------------------------- Gradle JVM 21
 [ -x ./gradlew ] || fail "./gradlew not found or not executable (run from the repo root)"
 GRADLE_VERSION_OUTPUT="$(./gradlew -version 2>&1)"
