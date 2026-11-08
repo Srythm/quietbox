@@ -35,6 +35,13 @@ info "java: $JAVA_FIRST_LINE"
 # ------------------------------------------------------- Gradle Wrapper pins
 bash tools/check-wrapper.sh
 info "gradle wrapper pins: OK"
+# ------------------------------------------------------- Anchor DEX check
+if [ -n "${TARGET_APK:-}" ]; then
+    bash tools/check-anchors.sh
+else
+    info "anchor dex check: SKIP (set TARGET_APK to validate against a host APK)"
+fi
+
 
 # ------------------------------------------------------- Gradle JVM 21
 [ -x ./gradlew ] || fail "./gradlew not found or not executable (run from the repo root)"
