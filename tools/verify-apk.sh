@@ -14,7 +14,16 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GRADLE_FILE="$ROOT_DIR/app/build.gradle"
 VERSION_GATE="$ROOT_DIR/app/src/main/java/com/quietbox/app/VersionGate.java"
 
-EXPECTED_CERT_SHA256="eb1ef863244840365264654a12179d33f41b402cf136c59ef3e59553bffacebd"
+TRUST_FILE="$ROOT_DIR/release-trust.properties"
+[ -f "$TRUST_FILE" ] || {
+    echo "ERROR: 缺少 $TRUST_FILE（release 信任锚）" >&2
+    exit 2
+}
+EXPECTED_CERT_SHA256="$(sed -n 's/^[[:space:]]*certificateSha256[[:space:]]*=[[:space:]]*//p' "$TRUST_FILE" | tr -d '' | tail -n 1)"
+printf '%s' "$EXPECTED_CERT_SHA256" | grep -Eq '^[0-9a-f]{64}$' || {
+    echo "ERROR: $TRUST_FILE 缺少有效的 certificateSha256（64 位小写 hex）" >&2
+    exit 2
+}
 EXPECTED_SCOPE="com.xingin.xhs"
 EXPECTED_ENTRY="com.quietbox.app.QuietBoxModule"
 REQUIRED_CLASSES=(
