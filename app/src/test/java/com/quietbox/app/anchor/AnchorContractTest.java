@@ -1,6 +1,7 @@
 package com.quietbox.app.anchor;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -217,12 +218,8 @@ public class AnchorContractTest {
         Map<String, Object> classes = object(json.get("classes"));
         Map<String, String> constants = anchorKeys();
         Set<String> fieldKeys = new HashSet<>();
-        for (Map.Entry<String, Object> entry : anchors.entrySet()) {
-            Object signature = object(entry.getValue()).get("s");
-            if (signature instanceof String && !((String) signature).startsWith("(")) {
-                fieldKeys.add(entry.getKey());
-            }
-        }
+        Set<String> methodKeys = new HashSet<>();
+        splitAnchorKinds(anchors, methodKeys, fieldKeys);
 
         Pattern accessor = Pattern.compile(
                 "\\banchors\\s*\\.\\s*(method|clazz|field)\\s*\\(\\s*AnchorKeys\\.([A-Za-z0-9_]+)\\s*\\)");
@@ -234,16 +231,77 @@ public class AnchorContractTest {
                 String key = constants.get(constant);
                 assertNotNull("引用了不存在的 AnchorKeys." + constant + "：" + source, key);
                 if ("method".equals(kind) || "field".equals(kind)) {
-                    assertTrue("anchors." + kind + " 使用了非对应段 key：" + key + "（"
+                    assertTrue("anchors." + kind + " 使用了非对应种类的锚点 key：" + key + "（"
                                     + source + "）",
-                            "method".equals(kind) ? anchors.containsKey(key)
-                                    : fieldKeys.contains(key));
+                            isKindKey(kind, key, methodKeys, fieldKeys));
                 } else {
                     assertTrue("anchors.clazz 使用了 classes 段之外的 key：" + key + "（"
                                     + source + "）", classes.containsKey(key));
                 }
             }
         }
+    }
+
+    /**
+     * anchors 段同时容纳方法锚点（s 以 "(" 开头）与字段锚点（s 不以 "(" 开头），
+     * 分别供 method()/field() 解析；与 tools/gen_anchors.py 的判定口径一致。
+     * 返回 methodKeys / fieldKeys 供访问器契约按「签名种类」而非「段内存在」校验。
+     */
+    private static void splitAnchorKinds(Map<String, Object> anchors,
+                                         Set<String> methodKeys, Set<String> fieldKeys) {
+        for (Map.Entry<String, Object> entry : anchors.entrySet()) {
+            Object signature = object(entry.getValue()).get("s");
+            if (signature instanceof String) {
+                if (((String) signature).startsWith("(")) {
+                    methodKeys.add(entry.getKey());
+                } else {
+                    fieldKeys.add(entry.getKey());
+                }
+            }
+        }
+    }
+
+    /** accessor -> 该种类允许的 key 集合；method 用 methodKeys，field 用 fieldKeys。 */
+    private static boolean isKindKey(String kind, String key,
+                                     Set<String> methodKeys, Set<String> fieldKeys) {
+        return "method".equals(kind) ? methodKeys.contains(key) : fieldKeys.contains(key);
+    }
+
+    /**
+     * F116 回归（纯表驱动，不依赖源码里 accessor 正则是否命中）：把字段锚点传给
+     * method() 必须被契约拒绝。当前真实调用全走 HookKit 的变量传参，正则 0 命中，
+     * 因此这里直接构造含方法/字段两类锚点的表，钉住「按签名种类校验」的判定本身；
+     * 若把 method 分支退回只校验 anchors.containsKey(key)，本用例立即失败。
+     */
+    @Test
+    public void methodAccessorRejectsFieldAnchorKeys() {
+        Map<String, Object> anchors = new HashMap<>();
+        anchors.put("a_method", object(syntheticEntry("()V")));
+        anchors.put("a_field", object(syntheticEntry("Ljava/lang/String;")));
+        Set<String> methodKeys = new HashSet<>();
+        Set<String> fieldKeys = new HashSet<>();
+        splitAnchorKinds(anchors, methodKeys, fieldKeys);
+
+        assertEquals("方法锚点必须进 methodKeys", setOf("a_method"), methodKeys);
+        assertEquals("字段锚点必须进 fieldKeys", setOf("a_field"), fieldKeys);
+        assertTrue("method() 传方法锚点必须通过",
+                isKindKey("method", "a_method", methodKeys, fieldKeys));
+        assertFalse("method() 传字段锚点必须被拒绝（旧实现只校验段内存在会放行）",
+                isKindKey("method", "a_field", methodKeys, fieldKeys));
+        assertTrue("field() 传字段锚点必须通过",
+                isKindKey("field", "a_field", methodKeys, fieldKeys));
+        assertFalse("field() 传方法锚点必须被拒绝",
+                isKindKey("field", "a_method", methodKeys, fieldKeys));
+    }
+
+    private static Map<String, Object> syntheticEntry(String signature) {
+        Map<String, Object> entry = new HashMap<>();
+        entry.put("s", signature);
+        return entry;
+    }
+
+    private static Set<String> setOf(String... values) {
+        return new HashSet<>(java.util.Arrays.asList(values));
     }
 
     @Test

@@ -105,12 +105,8 @@ final class WatermarkHooks {
                 Object[] replaced = null;
                 try {
                     List<Object> args = chain.getArgs();
-                    if (args.size() >= 6) {
-                        replaced = args.toArray();
-                        // 跳过主水印
-                        replaced[4] = Boolean.TRUE;
-                        // 跳过 AI 水印
-                        replaced[5] = Boolean.TRUE;
+                    replaced = applyComposeFlags(args == null ? null : args.toArray());
+                    if (replaced != null) {
                         HookKit.hit(module, f, "jm8.j#a");
                     }
                 } catch (Throwable t) {
@@ -143,6 +139,28 @@ final class WatermarkHooks {
                 return replaced == null ? chain.proceed() : chain.proceed(replaced);
             }
         };
+    }
+
+    /**
+     * 画布合成侧改参逻辑（F108）：锚点 bm8.j#a 的真实签名是
+     * {@code (Bitmap, Bitmap, Bitmap, Bitmap, boolean, boolean)}，恰好 6 参，
+     * 两个布尔位在 index 4/5。同版本另存在 12 参重载（见类注释），R8 名字复用或
+     * 描述符漂移时 slot 4/5 已不是这两个开关；因此只接受 length == 6 的形状，
+     * 其余（含 12 参重载）一律返回 null，由调用方原参 proceed 且不记 hit，避免把
+     * Bitmap 引用位写成 Boolean.TRUE 后仍报命中（与 {@link #applyWatermarkFlags}
+     * 的严格长度判定同口径）。抽成纯静态方法供 JVM 单测。
+     *
+     * @return 置位后的新数组；长度非 6 返回 null
+     */
+    @Nullable
+    static Object[] applyComposeFlags(Object[] args) {
+        if (args == null || args.length != 6) {
+            return null;
+        }
+        Object[] replaced = args.clone();
+        replaced[4] = Boolean.TRUE;    // disableWaterMark
+        replaced[5] = Boolean.TRUE;   // disableAiWaterMark
+        return replaced;
     }
 
     /**

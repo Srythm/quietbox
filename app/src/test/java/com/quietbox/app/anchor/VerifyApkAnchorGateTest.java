@@ -1,8 +1,12 @@
 package com.quietbox.app.anchor;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+
+import com.quietbox.app.VersionGate;
 
 import org.junit.Test;
 
@@ -153,5 +157,40 @@ public class VerifyApkAnchorGateTest {
         String script = read(findRepoFile(SCRIPT_RELATIVE));
         assertTrue("verify-apk.sh 必须定义 PYTHON_BIN",
                 script.contains("PYTHON_BIN=\"$(command -v python3 || command -v python || true)\""));
+    }
+
+    /**
+     * 行为断言（F-xxx）：用真实解析器把 anchors.json 解析成 AnchorTable，再断言
+     * 解析结果的版本信息与 VersionGate 一致——而不是只对脚本文本做正则比对。
+     *
+     * <p>这条把「锚点表能对上适配版本」从「脚本里含某段文字」升级为「真实解析器
+     * 读到的 appVersion/versionCode 就是 VersionGate 声明的那一版」。
+     */
+    @Test
+    public void sourceTableParsesToVersionGateBehavior() {
+        AnchorTable table = AnchorTable.load(AnchorTable.class.getClassLoader());
+        assertNotNull("anchors.json 必须能在测试 classpath 上被真实解析器加载", table);
+        assertEquals("解析出的 appVersion 必须等于 VersionGate 适配版本",
+                VersionGate.SUPPORTED_VERSION, table.getAppVersion());
+        assertEquals("解析出的 versionCode 必须等于 VersionGate 适配版本",
+                VersionGate.SUPPORTED_VERSION_CODE, table.getVersionCode());
+        assertTrue("适配版本自身必须被判定为受支持",
+                table.isSupportedVersion(VersionGate.SUPPORTED_VERSION));
+        assertFalse("非适配版本必须被判定为不受支持",
+                table.isSupportedVersion("0.0.0-not-adapted"));
+    }
+
+    /**
+     * 行为断言（F-xxx）：发版流程必须实际执行 tools/verify-apk.sh 对构建出的 APK
+     * 做真包校验（门禁真的被接线，而不是只在脚本里定义了校验逻辑）。
+     */
+    @Test
+    public void releaseFlowExecutesRealApkVerificationGate() throws Exception {
+        String release = read(findRepoFile("tools/release.sh"));
+        assertTrue("发版流程必须执行 verify-apk.sh 真包校验", release.contains("verify-apk.sh"));
+        assertTrue("verify-apk.sh 必须接收构建出的真实 APK 路径（\"$APK\"）",
+                release.contains("\"$APK\""));
+        assertTrue("真包校验必须传入适配版本号做比对",
+                release.contains("--expected-version"));
     }
 }

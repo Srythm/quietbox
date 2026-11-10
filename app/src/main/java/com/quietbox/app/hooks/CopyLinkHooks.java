@@ -125,10 +125,12 @@ final class CopyLinkHooks {
         CharSequence label = clip.getDescription() == null ? null : clip.getDescription().getLabel();
         CharSequence text = clip.getItemAt(0).getText();
         seen(module, f, "clip label=" + label);
-        if (!(text instanceof String)) {
+        // ClipData.Item.getText() 是 CharSequence：宿主可能传 Spanned/富文本，
+        // 旧 instanceof String 会对非 String 一律 fail-open，追踪参数原样写入剪贴板。
+        String raw = normalizeCopyText(text);
+        if (raw == null) {
             return null;
         }
-        String raw = (String) text;
         String clean = sanitizeCopy(raw, label, stripToken);
         if (clean.equals(raw)) {
             return null;
@@ -215,8 +217,10 @@ final class CopyLinkHooks {
                         Object text = args.get(2);
                         seen(module, f, "m92.r.a label=" + label);
                         CharSequence csLabel = label instanceof CharSequence ? (CharSequence) label : null;
-                        if (text instanceof String && isCopyLabel(csLabel)) {
-                            String raw = (String) text;
+                        // 副挂 text 参数类型就是 CharSequence：富文本/Spanned 也必须净化。
+                        String raw = normalizeCopyText(
+                                text instanceof CharSequence ? (CharSequence) text : null);
+                        if (raw != null && isCopyLabel(csLabel)) {
                             String clean = sanitizeCopy(raw, csLabel, stripToken);
                             if (!clean.equals(raw)) {
                                 replaced = args.toArray();
@@ -231,6 +235,21 @@ final class CopyLinkHooks {
                 return replaced == null ? chain.proceed() : chain.proceed(replaced);
             }
         };
+    }
+
+    /**
+     * 复制文本归一化：ClipData.Item.getText() / 副挂 text 参数都是 CharSequence，
+     * 宿主可能传 Spanned/富文本（非 String）。旧 instanceof String 对这类值一律
+     * fail-open，URL 追踪参数原样写入剪贴板。统一 toString()（富文本 span 丢失
+     * 但 URL 文本保留，htmlText 侧由 preserveHtml 处理）；null/空返回 null 表示
+     * 无需净化。纯函数，供 JVM 单测直接调用。
+     */
+    @Nullable
+    static String normalizeCopyText(@Nullable CharSequence text) {
+        if (text == null || text.length() == 0) {
+            return null;
+        }
+        return text.toString();
     }
 
     /**

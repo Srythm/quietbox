@@ -61,6 +61,14 @@ public class AbTestFragment extends PreferenceFragmentCompat {
                 return t;
             });
 
+    /** 构造 ConfigStore/AbConfigStore 会同步访问 remote prefs binder，不能在主线程做。 */
+    private static final ExecutorService STORE_BUILD_EXECUTOR =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "QuietBox-AB-store-build");
+                t.setDaemon(true);
+                return t;
+            });
+
     private final ActivityResultLauncher<String> mCreateDoc =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("text/csv"),
                     this::onExportUri);
@@ -86,9 +94,11 @@ public class AbTestFragment extends PreferenceFragmentCompat {
             pollOther();
         }
     };
-    /** 每个 key 最近一次写入的序号：旧回调不能覆盖新状态。 */
-    private final Map<String, Long> mWriteSeq = new HashMap<>();
-    private long mWriteCounter;
+    /**
+     * 每个 key 的写回状态机：begin 记在途（refresh 不拿回读值覆盖乐观选择）、
+     * onResult 判最新序号、rollback 给失败回滚值。与 SettingsFragment 同口径。
+     */
+    private final WriteGate mWriteGate = new WriteGate();
     private int mOtherLoaded;
     private boolean mLoadingMore;
 
@@ -96,9 +106,6 @@ public class AbTestFragment extends PreferenceFragmentCompat {
     public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
         PreferenceScreen screen = getPreferenceManager().createPreferenceScreen(requireContext());
         setPreferenceScreen(screen);
-        mStoreService = ServiceBridge.get();
-        mStore = new ConfigStore(requireContext());
-        mAb = new AbConfigStore(requireContext());
         build(screen);
     }
 
@@ -106,7 +113,7 @@ public class AbTestFragment extends PreferenceFragmentCompat {
     public void onDestroyView() {
         // view 已销毁，旧写入的回调不能再改 UI；轮询也必须停掉。
         stopOtherPolling();
-        mWriteSeq.clear();
+        mWriteGate.clear();
         super.onDestroyView();
     }
 
@@ -183,10 +190,19 @@ public class AbTestFragment extends PreferenceFragmentCompat {
         mMaster.setSummary(R.string.ab_panel_summary);
         mMaster.setOnPreferenceChangeListener((pref, value) -> {
             boolean requested = (Boolean) value;
-            long seq = nextWriteSeq(Feature.AB_TEST_PANEL.key);
+            if (mAb == null) {
+                // 后台构造尚未完成：此时没有可写的 remote 通道。
+                Toast.makeText(requireContext(), R.string.action_write_failed,
+                        Toast.LENGTH_SHORT).show();
+                return false;
+            }
+            String key = Feature.AB_TEST_PANEL.key;
+            long seq = mWriteGate.begin(key);
             boolean accepted = mAb.setPanelEnabled(requested,
-                    committed -> onWriteResult(Feature.AB_TEST_PANEL.key, seq, committed));
+                    committed -> onWriteResult(key, requested, seq, committed));
             if (!accepted) {
+                // 写入未排进后台队列，不会有回调：显式释放在途标记。
+                mWriteGate.cancel(key, seq);
                 Toast.makeText(requireContext(), R.string.action_write_failed,
                         Toast.LENGTH_SHORT).show();
                 return false;
@@ -221,10 +237,16 @@ public class AbTestFragment extends PreferenceFragmentCompat {
             item.setTitle(test.titleRes);
             item.setOnPreferenceChangeListener((pref, value) -> {
                 boolean forced = (Boolean) value;
-                long seq = nextWriteSeq(test.key);
+                if (mAb == null) {
+                    Toast.makeText(requireContext(), R.string.action_write_failed,
+                            Toast.LENGTH_SHORT).show();
+                    return false;
+                }
+                long seq = mWriteGate.begin(test.key);
                 boolean accepted = mAb.setForced(test.key, forced, test.forceValue,
-                        committed -> onWriteResult(test.key, seq, committed));
+                        committed -> onWriteResult(test.key, forced, seq, committed));
                 if (!accepted) {
+                    mWriteGate.cancel(test.key, seq);
                     Toast.makeText(requireContext(), R.string.action_write_failed,
                             Toast.LENGTH_SHORT).show();
                     return false;
@@ -261,7 +283,16 @@ public class AbTestFragment extends PreferenceFragmentCompat {
         if (ctx == null) {
             return;
         }
-        ensureStores(ctx);
+        // 构造 store 会同步走 remote prefs binder，必须在后台做；结果回主线程后再套用。
+        // service 换绑/未构造时先返回，等后台构造完成由 applyRefresh 重入。
+        if (!ensureStores(ctx)) {
+            return;
+        }
+        applyRefresh(masterOverride);
+    }
+
+    /** 主线程：用已构造好的 store 刷新开关/摘要，不再触发 binder。 */
+    private void applyRefresh(Boolean masterOverride) {
         mAb.syncOverrides();
         boolean master = masterOverride != null
                 ? masterOverride
@@ -274,7 +305,10 @@ public class AbTestFragment extends PreferenceFragmentCompat {
         if (mayMirrorPanelEnabled(masterOverride != null, mStore.remote())) {
             mAb.syncPanelEnabled(master);
         }
-        mMaster.setCheckedValue(master);
+        // 有在途写入的 key：refresh 不能拿回读值覆盖用户刚做的乐观选择。
+        if (!mWriteGate.isPending(Feature.AB_TEST_PANEL.key)) {
+            mMaster.setCheckedValue(master);
+        }
         mMaster.setEnabled(mStore.remote());
         mMaster.setSummary(mStore.remote()
                 ? R.string.ab_panel_summary : R.string.ab_need_framework);
@@ -293,8 +327,11 @@ public class AbTestFragment extends PreferenceFragmentCompat {
                 }
                 MaterialSwitchPreference item = (MaterialSwitchPreference) p;
                 item.setEnabled(active);
-                item.setCheckedValue(overrides.containsKey(test.key));
-                updateItem(item, test, report, overrides);
+                // 在途写入期间保留乐观勾选与乐观摘要，避免回读旧值把开关弹回去。
+                if (!mWriteGate.isPending(test.key)) {
+                    item.setCheckedValue(overrides.containsKey(test.key));
+                    updateItem(item, test, report, overrides);
+                }
             }
         }
         refreshOther(report, mAb.lastReport());
@@ -316,39 +353,81 @@ public class AbTestFragment extends PreferenceFragmentCompat {
     /**
      * 同一 service 实例内 remote prefs 不会变，复用 store 可省掉每次 refresh
      * 重新构造 ConfigStore/AbConfigStore 触发的 remote prefs binder。
+     *
+     * @return true = store 已就绪，调用方可立即 applyRefresh；
+     *         false = 已在后台排入构造（或入参不足），结果回主线程后自行重入。
      */
-    private void ensureStores(Context ctx) {
+    private boolean ensureStores(Context ctx) {
         XposedService service = ServiceBridge.get();
         if (ConfigWritePolicy.reuseStore(mStore != null && mAb != null,
                 mStoreService, service)) {
-            return;
+            return true;
         }
-        mStore = new ConfigStore(ctx);
-        mAb = new AbConfigStore(ctx);
-        mStoreService = service;
+        buildStoresAsync(ctx, service);
+        return false;
     }
 
-    private long nextWriteSeq(String key) {
-        long seq = ++mWriteCounter;
-        mWriteSeq.put(key, seq);
-        return seq;
+    /** 后台构造 ConfigStore/AbConfigStore，结果回主线程后再套用；Fragment 已换绑/销毁时丢弃。 */
+    private void buildStoresAsync(Context ctx, XposedService service) {
+        Activity host = getActivity();
+        if (host == null) {
+            return;
+        }
+        Context app = ctx.getApplicationContext();
+        if (app == null) {
+            app = ctx;
+        }
+        final Context appCtx = app;
+        STORE_BUILD_EXECUTOR.execute(() -> {
+            ConfigStore store;
+            AbConfigStore ab;
+            try {
+                store = new ConfigStore(appCtx);
+                ab = new AbConfigStore(appCtx);
+            } catch (Throwable t) {
+                store = null;
+                ab = null;
+            }
+            final ConfigStore createdStore = store;
+            final AbConfigStore createdAb = ab;
+            host.runOnUiThread(() -> {
+                if (!isAdded() || getActivity() != host) {
+                    return;
+                }
+                if (ServiceBridge.get() != service) {
+                    // service 已换绑，绑定回调会触发下一次 refresh 重建。
+                    return;
+                }
+                mStore = createdStore;
+                mAb = createdAb;
+                mStoreService = service;
+                if (mStore == null || mAb == null) {
+                    return;
+                }
+                // service 换绑后旧回滚基线来自另一份存储，不再可信。
+                mWriteGate.clear();
+                applyRefresh(null);
+            });
+        });
     }
 
     /**
-     * 后台 commit 的结果回到主线程。成功时 UI 已经乐观更新过，无需处理；
-     * 失败必须从真实存储重读，把这次改动从 UI 上撤掉。
+     * 后台 commit 的结果回到主线程。release 在途标记后，成功补一次刷新纠正可能已被
+     * refresh() 跳过的乐观状态，失败则从真实存储重读把这次改动从 UI 上撤掉。
      */
-    private void onWriteResult(String key, long seq, boolean committed) {
+    private void onWriteResult(String key, boolean requested, long seq, boolean committed) {
         new Handler(Looper.getMainLooper()).post(() -> {
             if (!isAdded() || getView() == null || getContext() == null) {
                 return;
             }
-            Long latest = mWriteSeq.get(key);
-            if (latest == null || latest.longValue() != seq) {
+            if (!mWriteGate.onResult(key, seq, committed, requested)) {
                 // 用户已经又改了一次，旧写入的结果不能覆盖新状态。
                 return;
             }
             if (ConfigWritePolicy.keepUiState(true, committed)) {
+                // 成功后补一次刷新：纠正写入在途期间被 refresh() 跳过、或用户已离开
+                // 页面时没有套用的乐观状态，让开关/摘要与已确认落盘值一致。
+                refresh();
                 return;
             }
             Toast.makeText(requireContext(), R.string.action_write_failed,

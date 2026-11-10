@@ -17,6 +17,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -164,5 +165,128 @@ public class FeedAdHooksTest {
         }
         assertTrue("字段缺失必须记录 field:isAd 诊断原因: "
                 + HookState.skipReasons(Feature.FEED_AD_FILTER), found);
+    }
+
+    // ================================================================ F119
+    // 真正安装进宿主的包装层 dropAdsHook：argIndex 选择、arg instanceof List 守卫、
+    // 异常记账、proceed 恰好一次。此前只测了私有纯方法 dropAds，包装层零覆盖，
+    // 下标写错或宿主改参型时广告会全部漏过而测试仍全绿。
+
+    /** Chain 替身：记录 proceed 次数，可注入 getArg 抛错。 */
+    static final class ChainFake {
+        final List<Object> args;
+        final AtomicInteger proceedCalls = new AtomicInteger();
+        boolean throwOnGetArg;
+
+        ChainFake(Object... args) {
+            this.args = new ArrayList<>(Arrays.asList(args));
+        }
+
+        XposedInterface.Chain proxy() {
+            return (XposedInterface.Chain) Proxy.newProxyInstance(
+                    XposedInterface.class.getClassLoader(),
+                    new Class<?>[]{XposedInterface.Chain.class},
+                    (proxy, method, methodArgs) -> {
+                        switch (method.getName()) {
+                            case "getArg":
+                                if (throwOnGetArg) {
+                                    throw new IllegalStateException("getArg boom");
+                                }
+                                return args.get((Integer) methodArgs[0]);
+                            case "getArgs":
+                                return args;
+                            case "proceed":
+                            case "proceedWith":
+                                proceedCalls.incrementAndGet();
+                                return "proceeded";
+                            default:
+                                return null;
+                        }
+                    });
+        }
+    }
+
+    private static XposedInterface.Hooker dropAdsHook(XposedModule module, Feature f,
+                                                      String where, int argIndex)
+            throws Exception {
+        Method m = FeedAdHooks.class.getDeclaredMethod("dropAdsHook",
+                XposedModule.class, Feature.class, String.class, int.class);
+        m.setAccessible(true);
+        return (XposedInterface.Hooker) m.invoke(null, module, f, where, argIndex);
+    }
+
+    /**
+     * 9.51.0 起 Pd(boolean isRefresh, ArrayList pageData, 回调) 的列表从参数 0 移到 1：
+     * 包装层必须按 argIndex=1 取到列表并就地清理，arg0 布尔与回调不受影响。
+     */
+    @Test
+    public void dropAdsHook_filtersListAtConfiguredArgIndexAndProceedsOnce() throws Throwable {
+        List<LogRecord> logs = new ArrayList<>();
+        XposedModule module = newModule(logs);
+        Note ad = new Note(true, "ad");
+        Note normal = new Note(false, "normal");
+        List<Note> page = new ArrayList<>(Arrays.asList(ad, normal));
+        ChainFake chain = new ChainFake(Boolean.TRUE, page, "callback");
+
+        dropAdsHook(module, Feature.FEED_AD_FILTER, "feedAdPagerFilter", 1)
+                .intercept(chain.proxy());
+
+        assertEquals("列表参数必须被就地清理", Arrays.asList(normal), page);
+        assertTrue("arg0 布尔不受影响", (Boolean) chain.args.get(0));
+        assertEquals("回调参数原样保留", "callback", chain.args.get(2));
+        assertEquals("原方法必须且只被放行一次", 1, chain.proceedCalls.get());
+    }
+
+    /** argIndex=0 的入口（S/C0）：列表就是第 0 个参数。 */
+    @Test
+    public void dropAdsHook_argIndexZeroFiltersFirstArg() throws Throwable {
+        List<LogRecord> logs = new ArrayList<>();
+        XposedModule module = newModule(logs);
+        Note ad = new Note(true, "ad");
+        List<Note> page = new ArrayList<>(Arrays.asList(ad));
+        ChainFake chain = new ChainFake(page);
+
+        dropAdsHook(module, Feature.FEED_AD_FILTER, "feedAdAppendFilter", 0)
+                .intercept(chain.proxy());
+
+        assertTrue("arg0 列表里的广告必须被移除", page.isEmpty());
+        assertEquals(1, chain.proceedCalls.get());
+    }
+
+    /** 宿主改参型（该下标不是 List）：不抛、不删，只放行一次，也不应当成错误。 */
+    @Test
+    public void dropAdsHook_nonListArgPassesThroughWithoutError() throws Throwable {
+        List<LogRecord> logs = new ArrayList<>();
+        XposedModule module = newModule(logs);
+        ChainFake chain = new ChainFake(Boolean.TRUE, "not-a-list");
+
+        dropAdsHook(module, Feature.FEED_AD_FILTER, "feedAdPagerFilter", 1)
+                .intercept(chain.proxy());
+
+        assertEquals("非 List 入参原地放行", 1, chain.proceedCalls.get());
+        assertTrue("非 List 不是错误，不应写错误日志", logs.isEmpty());
+    }
+
+    /** intercept 内抛错：必须经 HookKit.error 记账，且原方法仍被放行一次。 */
+    @Test
+    public void dropAdsHook_interceptErrorLogsAndStillProceeds() throws Throwable {
+        List<LogRecord> logs = new ArrayList<>();
+        XposedModule module = newModule(logs);
+        ChainFake chain = new ChainFake(Boolean.TRUE, new ArrayList<Note>());
+        chain.throwOnGetArg = true;
+
+        dropAdsHook(module, Feature.FEED_AD_FILTER, "feedAdPagerFilter", 1)
+                .intercept(chain.proxy());
+
+        assertEquals("异常不得阻断原方法", 1, chain.proceedCalls.get());
+        boolean errorLogged = false;
+        for (LogRecord r : logs) {
+            if (r.priority == Log.ERROR
+                    && r.msg.contains("intercept error feedAdPagerFilter")) {
+                errorLogged = true;
+                break;
+            }
+        }
+        assertTrue("intercept 内异常必须经 HookKit.error 记账: " + logs.size(), errorLogged);
     }
 }

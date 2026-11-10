@@ -165,6 +165,37 @@ public class HookKitSourceScanTest {
             "hook id 的 label 不得内嵌混淆类名；请改用语义稳定名"
                     + "（DESIGN §14 第 4 条）");
 
+    /**
+     * F-120：install 的第 3 参 label 必须是字符串字面量。旧规则只认字面量第 3 参，
+     * {@link #thirdArgumentLabel} 对非字面量返回 null 直接放行，于是 ScreenShotHooks
+     * 用运行时混淆类名（{@code outer.getName()}）当 label 就静默漏过，规则自己的目标
+     * （F-062 id 稳定）没被强制。这里把「第 3 参非字面量」的调用点一律报告，由
+     * {@code dynamicHookLabelsAreExplicitlyPinned} 按 (file, 表达式) 显式登记语义稳定的
+     * 例外；新增未登记的非字面量 label 一律让门禁失败。
+     */
+    private static final SourceScan.Rule NO_DYNAMIC_HOOK_LABEL = new SourceScan.Rule(
+            "\\bHookKit\\.install\\s*\\(",
+            call -> thirdArgumentIsStringLiteral(call),
+            "install 的 label（第 3 参）必须是字符串字面量；变量/表达式 label"
+                    + "需在动态 label 清单里显式登记理由（DESIGN §14 第 4 条）");
+
+    /** 第 3 参是否为纯字符串字面量；拼接表达式（"x" + cond）视为非字面量。 */
+    private static boolean thirdArgumentIsStringLiteral(String call) {
+        List<String> args = topLevelArgs(call);
+        if (args.size() < 3) {
+            // 解析不到第 3 参时不误报，交给其它规则。
+            return true;
+        }
+        String third = args.get(2).trim();
+        return third.length() >= 2 && third.startsWith("\"") && third.endsWith("\"");
+    }
+
+    /** 取第 3 参的原始源码文本（用于与动态 label 清单比对）。 */
+    private static String thirdArgumentRaw(String call) {
+        List<String> args = topLevelArgs(call);
+        return args.size() >= 3 ? args.get(2).trim() : "";
+    }
+
     /** 形如 "h8b.e#b(...)" / "bt9.j#c(...)" 的短混淆类名 label。只检查第 3 参。 */
     private static boolean containsObfuscatedHookLabel(String call) {
         String label = thirdArgumentLabel(call);
@@ -388,6 +419,60 @@ public class HookKitSourceScanTest {
                 source, "A.java", NO_OBFUSCATED_HOOK_LABEL);
 
         assertEquals(1, findings.size());
+    }
+
+    /**
+     * F-120：第 3 参不是字面量的 install 调用点必须显式登记（file + 第 3 参表达式），
+     * 否则「用运行时混淆类名当 label」会像旧规则那样静默漏过。这里的清单是唯一
+     * 例外台账：新增未登记的非字面量 label 会让门禁失败。ScreenShotHooks:178 的
+     * {@code key}（{@code outer.getName()}）是已知待修缺口（属主 C45/F-374 改为语义
+     * 稳定名后应从清单移除），先钉住不让它继续隐形。
+     */
+    @Test
+    public void dynamicHookLabelsAreExplicitlyAllowlisted() throws IOException {
+        List<SourceScan.Finding> findings = SourceScan.scan(
+                hooksSource(), Collections.singletonList(NO_DYNAMIC_HOOK_LABEL));
+
+        for (SourceScan.Finding finding : findings) {
+            String third = thirdArgumentRaw(finding.snippet);
+            assertTrue("未登记的非字面量 label 调用点：file=" + finding.file
+                            + " third=" + third + " | " + finding,
+                    isAllowlistedDynamicLabel(finding.file, third));
+        }
+        assertFalse("规则未命中任何非字面量 label，可能被改坏（本仓应至少命中 ScreenShotHooks）",
+                findings.isEmpty());
+    }
+
+    /**
+     * 非字面量 label 的显式台账：file -> 允许的第 3 参表达式。
+     * 语义稳定 = 来自 AnchorKeys / KEYS / 固定 label 表等编译期常量，不是运行时类名。
+     */
+    private static boolean isAllowlistedDynamicLabel(String file, String third) {
+        switch (file) {
+            case "AutoPlayHooks.java":      // for (String key : KEYS) —— AnchorKeys 常量
+            case "ContentRatingHooks.java": // for (String key : {AnchorKeys.*}) —— 常量
+            case "PushGuideHooks.java":     // for (String key : SHOW_KEYS) —— 常量
+            case "SplashAdHooks.java":      // key/label 来自 *_KEYS / FULLSCREEN_LABELS
+                return "key".equals(third) || "label".equals(third);
+            case "AbTestHooks.java":        // "ABStore#" + key —— 稳定前缀 + 常量 key
+                return ("\"ABStore#\" + key").equals(third);
+            case "ScreenShotHooks.java":    // 已知缺口：key = outer.getName()（运行时混淆类名）
+                return "key".equals(third);
+            default:
+                return false;
+        }
+    }
+
+    /** 规则自检：非字面量 label 必须被捕获，字面量 label 不得误报。 */
+    @Test
+    public void dynamicLabelRuleCatchesVariableLabel() {
+        String variable = "class A { void a() { HookKit.install(module, f, key, m, hooker); } }";
+        assertEquals("变量 label 必须被门禁抓住",
+                1, SourceScan.scanSource(variable, "A.java", NO_DYNAMIC_HOOK_LABEL).size());
+
+        String literal = "class A { void a() { HookKit.install(module, f, \"stableName\", m, hooker); } }";
+        assertTrue("字面量 label 不应被误报",
+                SourceScan.scanSource(literal, "A.java", NO_DYNAMIC_HOOK_LABEL).isEmpty());
     }
 
     @Test

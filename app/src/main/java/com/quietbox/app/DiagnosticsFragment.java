@@ -86,14 +86,12 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
         if (app == null || host == null) {
             return;
         }
-        final String refreshTime = DateFormat.getTimeFormat(context)
-                .format(new Date(System.currentTimeMillis()));
         if (mRefreshFuture != null) {
             mRefreshFuture.cancel(false);
         }
         final long seq = ++mRefreshSeq;
         mRefreshFuture = STATUS_EXECUTOR.submit(() -> {
-            DiagData data = collect(app, refreshTime);
+            DiagData data = collect(app);
             host.runOnUiThread(() -> {
                 if (seq != mRefreshSeq || !isAdded() || getView() == null
                         || getActivity() != host || getPreferenceScreen() != screen) {
@@ -108,7 +106,8 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
     private void build(PreferenceScreen screen, DiagData data) {
         Preference header = new Preference(requireContext());
         header.setTitle(R.string.diag_title);
-        header.setSummary(getString(R.string.diag_header, data.refreshTime)
+        header.setSummary(getString(R.string.diag_header, data.headerTime)
+                + (data.staleNote.isEmpty() ? "" : "\n" + data.staleNote)
                 + "\n" + getString(R.string.diag_hint));
         header.setSelectable(false);
         screen.addPreference(header);
@@ -226,10 +225,8 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
         if (app == null || host == null) {
             return;
         }
-        final String refreshTime = DateFormat.getTimeFormat(context)
-                .format(new Date(System.currentTimeMillis()));
         STATUS_EXECUTOR.execute(() -> {
-            DiagData data = collect(app, refreshTime);
+            DiagData data = collect(app);
             host.runOnUiThread(() -> {
                 if (!isAdded() || getView() == null || getActivity() != host) {
                     return;
@@ -263,10 +260,8 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
         if (app == null || host == null) {
             return;
         }
-        final String refreshTime = DateFormat.getTimeFormat(context)
-                .format(new Date(System.currentTimeMillis()));
         STATUS_EXECUTOR.execute(() -> {
-            DiagData data = collect(app, refreshTime);
+            DiagData data = collect(app);
             host.runOnUiThread(() -> {
                 if (!isAdded() || getView() == null || getActivity() != host) {
                     return;
@@ -288,9 +283,23 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
      * 后台读取一份完整诊断快照；所有 SharedPreferences / PackageManager /
      * binder 访问都在这里完成，返回后主线程只负责渲染字符串。
      */
-    private static DiagData collect(Context app, String refreshTime) {
+    private static DiagData collect(Context app) {
         SharedPreferences sp = app.getSharedPreferences(StatusProvider.PREFS,
                 Context.MODE_PRIVATE);
+        // F094/F095：读 meta.updated_at 并做 TTL 新鲜度判定，口径与主页失败横幅的
+        // StatusProvider.hasFreshReport 一致（ReportProtocol.isFresh(..., REPORT_TTL_MS)）。
+        // 过期/从未回传的旧会话 reg/skip/hit 一律按无数据展示，避免目标进程早已被杀/
+        // 崩溃后仍把上一会话当成当前状态；抬头改用最近一次回传时间而非本次读取时间。
+        long updatedAt = readUpdatedAt(sp);
+        boolean fresh = reportFresh(updatedAt, System.currentTimeMillis());
+        String headerTime = updatedAt > 0L
+                ? DateFormat.getTimeFormat(app).format(new Date(updatedAt))
+                : app.getString(R.string.diag_no_data);
+        String headerLine = app.getString(R.string.diag_header, headerTime);
+        // 过期会话按无数据展示，抬头/导出/复制共用同一份过期提示；空态标题即
+        // "暂无诊断数据"，复用既有资源，避免新增中文字面量（DESIGN §10）。
+        String staleNote = fresh ? ""
+                : app.getString(R.string.diag_empty_title);
         Map<Feature, RawStatus> raw = readRawStatus(sp);
         String[] crashes = readCrashes(sp);
 
@@ -299,7 +308,8 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
         List<String> featureLines = new ArrayList<>();
         List<String> hitLines = new ArrayList<>();
         for (Feature f : Feature.values()) {
-            RawStatus status = raw.get(f);
+            // 过期会话的 reg/skip/hit 不得当作当前状态：按无数据展示。
+            RawStatus status = effectiveStatus(fresh, raw.get(f));
             String summary;
             if (f.blocked()) {
                 summary = app.getString(R.string.diag_blocked, f.blockedReason);
@@ -327,7 +337,10 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
                 Build.VERSION.SDK_INT));
         headerLines.add(app.getString(R.string.diag_export_framework, frameworkApi(app)));
         headerLines.add(app.getString(R.string.diag_export_target, targetText));
-        headerLines.add(app.getString(R.string.diag_header, refreshTime));
+        headerLines.add(headerLine);
+        if (!staleNote.isEmpty()) {
+            headerLines.add(staleNote);
+        }
         String exportText = joinExportText(joinLines(headerLines), featureLines, hitLines,
                 joinCrashText(crashes), app.getString(R.string.diag_no_data),
                 app.getString(R.string.diag_export_section_features),
@@ -336,11 +349,29 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
 
         List<String> copyHeader = new ArrayList<>();
         copyHeader.add(app.getString(R.string.app_name) + " " + version);
-        copyHeader.add(app.getString(R.string.diag_header, refreshTime));
+        copyHeader.add(headerLine);
+        if (!staleNote.isEmpty()) {
+            copyHeader.add(staleNote);
+        }
         String copyText = joinReportText(joinLines(copyHeader), featureLines,
                 joinCrashText(crashes), app.getString(R.string.diag_copy_crash_header));
-        return new DiagData(refreshTime, summaries, hasData, crashes,
+        return new DiagData(headerTime, staleNote, summaries, hasData, crashes,
                 exportText, copyText);
+    }
+
+    /** 读最近一次回传的落盘时间（meta.updated_at）；与 StatusProvider.reportUpdatedAt 同键。纯 JVM 可测。 */
+    static long readUpdatedAt(SharedPreferences sp) {
+        return readLong(sp, StatusProvider.VALUE_PREFIX + ReportProtocol.KEY_META_UPDATED_AT);
+    }
+
+    /** TTL 新鲜度判定，与 StatusProvider.hasFreshReport 同口径。纯 JVM 可测。 */
+    static boolean reportFresh(long updatedAt, long now) {
+        return ReportProtocol.isFresh(updatedAt, now, StatusProvider.REPORT_TTL_MS);
+    }
+
+    /** 过期会话的回传一律按无数据展示（与 TiebaQuiet 的 reportReported 同口径）。纯 JVM 可测。 */
+    static RawStatus effectiveStatus(boolean fresh, RawStatus reported) {
+        return fresh ? reported : null;
     }
 
     /** 把一组行按 '\n' 连接（不追加尾换行），供导出/复制共用同一组抬头文件。 */
@@ -517,17 +548,19 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
 
     /** 一次后台采集的完整快照：主线程渲染时不再触碰任何存储或 binder。 */
     private static final class DiagData {
-        final String refreshTime;
+        final String headerTime;
+        final String staleNote;
         final Map<Feature, String> summaries;
         final Map<Feature, Boolean> hasData;
         final String[] crashes;
         final String exportText;
         final String copyText;
 
-        DiagData(String refreshTime, Map<Feature, String> summaries,
+        DiagData(String headerTime, String staleNote, Map<Feature, String> summaries,
                  Map<Feature, Boolean> hasData, String[] crashes,
                  String exportText, String copyText) {
-            this.refreshTime = refreshTime;
+            this.headerTime = headerTime;
+            this.staleNote = staleNote;
             this.summaries = summaries;
             this.hasData = hasData;
             this.crashes = crashes;

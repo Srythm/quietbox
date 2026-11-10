@@ -4,6 +4,7 @@ import com.quietbox.app.Feature;
 import com.quietbox.app.HookState;
 import com.quietbox.app.anchor.AnchorKeys;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedInterface;
@@ -40,6 +41,23 @@ final class ForceSaveHooks {
      */
     static boolean shouldForceEnable(String type) {
         return TYPE_IMAGE_DOWNLOAD.equals(type) || TYPE_VIDEO_DOWNLOAD.equals(type);
+    }
+
+    /**
+     * 门 2 返回值收口：宿主 a() 声明为 boolean，调用方直接拆箱；proceed 给回
+     * null/非 Boolean 时绝不能原样 return，否则宿主 {@code !functionSwitch.a()}
+     * 拆箱 NPE。非 Boolean 一律 fail-open 到 false（保留宿主的原判定）。
+     */
+    static boolean originalOrFalse(Object original) {
+        return original instanceof Boolean ? (Boolean) original : Boolean.FALSE;
+    }
+
+    /** 反射 invoke 的失败被 InvocationTargetException 包了一层，取真实原因再记日志。 */
+    static Throwable unwrapInvocation(Throwable t) {
+        if (t instanceof InvocationTargetException && t.getCause() != null) {
+            return t.getCause();
+        }
+        return t;
     }
 
     static void install(XposedModule module, ClassLoader cl) {
@@ -85,9 +103,10 @@ final class ForceSaveHooks {
                                         }
                                     }
                                 } catch (Throwable t) {
-                                    HookKit.error(module, f.id + " FunctionSwitch#a error", t);
+                                    HookKit.error(module, f.id + " FunctionSwitch#a error",
+                                            unwrapInvocation(t));
                                 }
-                                return original;
+                                return originalOrFalse(original);
                             }
                         });
                 if (ok) {

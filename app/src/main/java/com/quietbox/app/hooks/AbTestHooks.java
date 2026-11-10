@@ -211,6 +211,8 @@ public final class AbTestHooks {
         private static volatile SharedPreferences sPrefs;
         private static volatile String sLastRaw = "";
         private static volatile int sPullErrors;
+        /** 周期任务 refresh/flush 未预料异常的告警计数，与 sPullErrors 同口径前 3 条后静默。 */
+        private static volatile int sRefreshErrors;
         /** provider 是否成功拉取过：成功过之后它就是运行期的权威值，失败期间必须保持上一次状态。 */
         private static volatile boolean sProviderPulled;
 
@@ -222,24 +224,49 @@ public final class AbTestHooks {
                 return;
             }
             sStarted = true;
-            // 只在这里碰一次框架 API；后台线程只读 SharedPreferences（线程安全）。
-            try {
-                sPrefs = module.getRemotePreferences(Config.GROUP);
-            } catch (Throwable ignored) {
-            }
+            bindRemotePrefs(module);
             refresh();
             ScheduledExecutorService ex = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "QuietBox-AB");
                 t.setDaemon(true);
                 return t;
             });
-            ex.scheduleWithFixedDelay(() -> {
-                try {
-                    refresh();
-                    flush();
-                } catch (Throwable ignored) {
+            ex.scheduleWithFixedDelay(() -> tick(), 2, 3, TimeUnit.SECONDS);
+        }
+
+        /**
+         * 只在这里碰一次框架 API；后台线程只读 SharedPreferences（线程安全）。
+         * 绑定失败必须记一次 WARN：否则 sPrefs 长期为 null，每次 refresh 的启动快照
+         * 兜底都静默 return，日志与诊断页毫无线索（F-098）。
+         */
+        static void bindRemotePrefs(XposedModule module) {
+            try {
+                sPrefs = module.getRemotePreferences(Config.GROUP);
+            } catch (Throwable t) {
+                Log.w(TAG, "EX-02 remote prefs unavailable", t);
+            }
+        }
+
+        /** 每 3 秒的刷新/回传收口：未预料异常按次数限流记 WARN，不再整段静默（F-098）。 */
+        static void tick() {
+            try {
+                refresh();
+                flush();
+            } catch (Throwable t) {
+                if (warnRefreshFailure()) {
+                    Log.w(TAG, "ex-02 refresh failed", t);
                 }
-            }, 2, 3, TimeUnit.SECONDS);
+            }
+        }
+
+        /** 周期任务异常告警限流：前 3 条打 WARN，之后静默，避免每 3 秒刷屏（F-098）。 */
+        static boolean warnRefreshFailure() {
+            return sRefreshErrors++ < 3;
+        }
+
+        /** provider 通道故障告警限流：前 3 条打 WARN，之后静默，避免每 3 秒刷屏（F-099）。 */
+        static boolean warnPullFailure() {
+            return sPullErrors++ < 3;
         }
 
         static AbTest override(String key) {
@@ -314,8 +341,26 @@ public final class AbTestHooks {
                     || key.startsWith("local_exp_");
         }
 
-        /** provider 调用最多等 2 秒；超时/异常一律返回 null，由调用方走兜底。 */
-        private static Bundle callProvider(Context ctx, String method, Bundle extras) {
+        /**
+         * provider 调用最多等 2 秒；超时/异常一律返回 {@link PullResult}，由调用方走兜底。
+         * 失败原因随 null 一起带回：队列拒绝/2 秒超时/其它异常分别记 reason，否则这三种
+         * 失败会一律静默 return null，refresh 的告警与 sPullErrors 计数永远不可达（F-099）。
+         */
+        static final class PullResult {
+            final Bundle bundle;
+            final String reason;
+
+            PullResult(Bundle bundle, String reason) {
+                this.bundle = bundle;
+                this.reason = reason;
+            }
+
+            boolean ok() {
+                return bundle != null;
+            }
+        }
+
+        private static PullResult callProvider(Context ctx, String method, Bundle extras) {
             Future<Bundle> f;
             try {
                 f = CALL_POOL.submit(() -> ctx.getContentResolver().call(
@@ -323,46 +368,39 @@ public final class AbTestHooks {
                         method, null, extras));
             } catch (RejectedExecutionException e) {
                 // 上一次 provider 调用还卡在 binder 里：直接按失败处理，不再堆积任务。
-                return null;
+                return new PullResult(null, "provider 调用被拒绝（上一次调用未完成）");
             }
             try {
-                return f.get(2, TimeUnit.SECONDS);
+                return new PullResult(f.get(2, TimeUnit.SECONDS), null);
             } catch (TimeoutException e) {
                 f.cancel(true);
-                return null;
+                return new PullResult(null, "provider 调用超时（2 秒）");
             } catch (Throwable t) {
-                return null;
+                return new PullResult(null, "provider 调用异常: " + t.getClass().getName());
             }
         }
 
         private static void refresh() {
             // 运行中优先向模块 App 拉取：remote prefs 在宿主里是启动快照，
             // 改开关后不会变，必须靠 provider 这条活通道。
+            String failure = null;
             Context context = context();
-            if (context != null) {
-                try {
-                    Bundle b = callProvider(context, "overrides", null);
-                    if (b != null) {
-                        sPullErrors = 0;
-                        sProviderPulled = true;
-                        boolean enabled = b.getBoolean(AbReportProvider.KEY_PANEL_ENABLED, false);
-                        String raw = b.getString(AbReportProvider.KEY_OVERRIDES, "");
-                        if (!raw.equals(sLastRaw)) {
-                            sLastRaw = raw;
-                            Log.i(TAG, "EX-02 provider pull enabled=" + enabled + " raw=" + raw);
-                        }
-                        Map<String, String> next = enabled
-                                ? AbOverrides.parse(raw)
-                                : Collections.emptyMap();
-                        apply(enabled, next);
-                        return;
-                    }
-                } catch (Throwable t) {
-                    if (sPullErrors++ < 3) {
-                        Log.w(TAG, "EX-02 provider pull failed", t);
-                    }
+            if (context == null) {
+                failure = "provider context 不可用";
+            } else {
+                PullResult pull = callProvider(context, "overrides", null);
+                if (pull.ok()) {
+                    Bundle b = pull.bundle;
+                    sPullErrors = 0;
+                    sProviderPulled = true;
+                    applyFromBundle(b);
+                    return;
                 }
+                failure = pull.reason;
             }
+            // provider 失败（模块 App 被系统杀掉、2 秒超时、调用被拒、无 Context）：
+            // 活通道坏了从日志和诊断页都必须看得出来，否则覆盖表静默停在上次快照（F-099）。
+            onProviderPullFailed(failure);
             // provider 失败（模块 App 被系统杀掉、2 秒超时、调用被拒）：成功拉取过就不能
             // 回落到启动快照，否则会把运行中改过的强开项整体覆盖、开关被静默翻转。
             if (!mayUseStartupSnapshot(sProviderPulled)) {
@@ -380,6 +418,36 @@ public final class AbTestHooks {
             } catch (Throwable ignored) {
                 // 读取失败时保持上一次状态，不打断宿主。
             }
+        }
+
+        /** 解析 provider 返回的覆盖表并应用（成功路径）。 */
+        private static void applyFromBundle(Bundle b) {
+            try {
+                boolean enabled = b.getBoolean(AbReportProvider.KEY_PANEL_ENABLED, false);
+                String raw = b.getString(AbReportProvider.KEY_OVERRIDES, "");
+                if (!raw.equals(sLastRaw)) {
+                    sLastRaw = raw;
+                    Log.i(TAG, "EX-02 provider pull enabled=" + enabled + " raw=" + raw);
+                }
+                apply(enabled, enabled ? AbOverrides.parse(raw) : Collections.emptyMap());
+            } catch (Throwable t) {
+                if (warnPullFailure()) {
+                    Log.w(TAG, "EX-02 provider pull apply failed", t);
+                }
+            }
+        }
+
+        /**
+         * provider 拉取失败统一记账：按 sPullErrors 采样打 WARN，并用非 critical 的
+         * markNotFound 把失败原因带进诊断页（EX-02 强开整体停摆不再全无痕迹，F-099）。
+         * 原因文本去重（core.addReasonLocked），不会每 3 秒堆一条重复 skip。
+         */
+        static void onProviderPullFailed(String failure) {
+            if (warnPullFailure()) {
+                Log.w(TAG, "EX-02 provider pull failed: " + failure);
+            }
+            HookState.markNotFound(Feature.AB_TEST_PANEL,
+                    "provider 通道故障: " + failure);
         }
 
         /**
@@ -439,11 +507,11 @@ public final class AbTestHooks {
             extras.putStringArray("keys", keys.toArray(new String[0]));
             extras.putStringArray("values", values.toArray(new String[0]));
             try {
-                Bundle result = callProvider(context, "report", extras);
-                if (result == null) {
+                PullResult pull = callProvider(context, "report", extras);
+                if (!pull.ok()) {
                     // 超时或模块 App 不可用：一分钟后再试，别每 3 秒刷日志。
                     sNextReportTry = System.currentTimeMillis() + 60_000L;
-                    Log.w(TAG, "ab report provider unavailable");
+                    Log.w(TAG, "ab report provider unavailable: " + pull.reason);
                     return;
                 }
                 for (int i = 0; i < keys.size(); i++) {

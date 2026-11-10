@@ -198,6 +198,13 @@ public class CheckMountsVersionGateTest {
         builder.environment().put("DEXSQL", "");
         builder.environment().put("AAPT2", "");
         builder.environment().put("CHECK_MOUNTS_ALLOW_VERSION", "");
+        // 版本门禁之后脚本还要解析 anchors（依赖 python）；Gradle worker 的 PATH
+        // 不一定有 python3/python，这里放一个只 exit 0 的假解释器，专测版本门禁语义。
+        File fakePython = new File(script.getParentFile(), "python3");
+        Files.write(fakePython.toPath(),
+                "#!/usr/bin/env bash\nexit 0\n".getBytes(StandardCharsets.UTF_8));
+        makeExecutable(bash, fakePython);
+        builder.environment().put("PYTHON", toPosix(fakePython.getAbsolutePath()));
         builder.redirectErrorStream(true);
         Process process = builder.start();
         String output = readAll(process.getInputStream());
@@ -253,9 +260,18 @@ public class CheckMountsVersionGateTest {
                 if (entry.toLowerCase().contains("system32")) {
                     continue;
                 }
-                File bashExe = new File(entry, "bash.exe");
-                if (bashExe.isFile()) {
-                    candidates.add(bashExe.getAbsolutePath());
+                File dir = new File(entry);
+                File direct = new File(dir, "bash.exe");
+                if (direct.isFile()) {
+                    candidates.add(direct.getAbsolutePath());
+                }
+                // PATH 里常见的是 <Git>/cmd，真正的 bash 在 <Git>/bin。
+                File parent = dir.getParentFile();
+                if (parent != null) {
+                    File inBin = new File(new File(parent, "bin"), "bash.exe");
+                    if (inBin.isFile()) {
+                        candidates.add(inBin.getAbsolutePath());
+                    }
                 }
             }
         }
@@ -269,7 +285,9 @@ public class CheckMountsVersionGateTest {
             try {
                 Process process = new ProcessBuilder(candidate, "--version")
                         .redirectErrorStream(true).start();
-                if (process.waitFor() == 0) {
+                boolean msys = isMsys(new String(process.getInputStream().readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8));
+                if (process.waitFor() == 0 && msys) {
                     return candidate;
                 }
             } catch (Exception ignored) {
@@ -277,6 +295,41 @@ public class CheckMountsVersionGateTest {
             }
         }
         return null;
+    }
+
+    /** WSL 的 bash 也能 --version 成功，但它访问不了 C:/... 这种 Windows 临时路径。 */
+    private static boolean isMsys(String banner) {
+        return banner.contains("msys") || banner.contains("MSYS")
+                || banner.contains("MINGW") || banner.contains("CYGWIN");
+    }
+
+    /** 在 PATH 里找一个真实可用的 python（跳过 WindowsApps 的商店别名）。 */
+    private static String findPython() {
+        String path = System.getenv("PATH");
+        if (path == null) {
+            return null;
+        }
+        for (String entry : path.split(File.pathSeparator)) {
+            if (entry.toLowerCase().contains("windowsapps")) {
+                continue;
+            }
+            for (String name : new String[]{"python3.exe", "python.exe", "python3", "python"}) {
+                File candidate = new File(entry, name);
+                if (candidate.isFile()) {
+                    return toPosix(candidate.getAbsolutePath());
+                }
+            }
+        }
+        return null;
+    }
+
+    /** MSYS bash 的 command -v 不认 C:\...，转成 /c/... 形式。 */
+    private static String toPosix(String win) {
+        String p = win.replace('\\', '/');
+        if (p.length() > 1 && p.charAt(1) == ':') {
+            p = "/" + Character.toLowerCase(p.charAt(0)) + p.substring(2);
+        }
+        return p;
     }
 
     private static File newFolder(String prefix) throws Exception {

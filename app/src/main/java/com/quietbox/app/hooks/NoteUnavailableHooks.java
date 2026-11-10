@@ -60,7 +60,7 @@ final class NoteUnavailableHooks {
             sHolderClass = anchorClassName(anchors, AnchorKeys.NOTE_DETAIL_HOLDER);
             Method invoke = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.NOTE_UNAVAILABLE_MAP_INVOKE, true);
-            HookKit.install(module, f, "NoteDetailRepository#map", invoke, hook(module, f),
+            HookKit.install(module, f, "NoteDetailRepository#map", invoke, hookFactory(module, f),
                     XposedInterface.ExceptionMode.PASSTHROUGH);
             HookState.note(f, "服务端返回 error 页时改用本地数据/离线路径");
         } catch (Throwable t) {
@@ -77,7 +77,8 @@ final class NoteUnavailableHooks {
         return anchors.className(key);
     }
 
-    private static XposedInterface.Hooker hook(XposedModule module, Feature f) {
+    /** 包内可见：供 JVM 单测直接驱动 hook 体（定位失败 fail-open / 真实离线路径）。 */
+    static XposedInterface.Hooker hookFactory(XposedModule module, Feature f) {
         return new XposedInterface.Hooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
@@ -98,13 +99,22 @@ final class NoteUnavailableHooks {
                         return result;
                     }
                     Object repo = valueOfType(chain.getThisObject(), sRepoClass);
-                    Object previous = repo == null ? null : valueOfType(repo, sHolderClass);
+                    if (repo == null) {
+                        // repo 定位失败（R8 静态化让 getThisObject() 为 null、lambda 不再捕获
+                        // repo、字段类型改变、反射异常被 valueOfType 吞掉）不等于「确实没有
+                        // 本地缓存」：按模块 fail-open 约定原样返回 result，只记 skip 供诊断，
+                        // 绝不抛 IOException 把详情页直接打不开。文案与离线路径区分，便于定位。
+                        HookKit.hit(module, f, "error feed -> repo lookup failed (fail-open)");
+                        HookState.markNotFound(f, "锚点缺失 note repository 定位失败");
+                        return result;
+                    }
+                    Object previous = valueOfType(repo, sHolderClass);
                     if (isUsableHolder(previous) && sameNote(previous, result)) {
                         HookKit.hit(module, f, "restore cached holder");
                         return previous;
                     }
-                    HookKit.hit(module, f, "error feed -> offline path");
-                    // RxJava 会把它当成请求失败，走与断网相同的分支。
+                    HookKit.hit(module, f, "error feed -> offline path (no usable cached holder)");
+                    // repo 已定位、只是没有可用旧 holder：走与断网相同的离线分支。
                     throw new IOException("quietbox: note unavailable");
                 } catch (IOException io) {
                     throw io;

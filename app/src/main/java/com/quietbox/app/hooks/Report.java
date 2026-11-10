@@ -97,6 +97,17 @@ final class Report {
     private static volatile long sNextTry;
     private static volatile int sErrors;
 
+    /**
+     * 回传状态机锁：定时 {@link #flush()} 跑在单线程 executor、崩溃路径
+     * {@link #flushNow()} 跑在 CrashFlush 的 daemon 线程，两条线程会并发读写
+     * sLast / sLastOk / sNextTry / sErrors。{@code sErrors++} 与「内容 + 时间」的
+     * 成对赋值都不是原子的：没有这把锁，失败计数会丢更新、已回传内容与时间可能
+     * 来自两次不同回传（心跳窗口错位、同一快照重复发送）。与 {@link #start()} /
+     * {@link #installCrashHandler()} 的类锁分开，避免同步 provider 调用期间堵住
+     * 这两个一次性入口。与 TiebaQuiet / QuietMap 已修复版本口径一致。
+     */
+    private static final Object FLUSH_LOCK = new Object();
+
     /** 单条崩溃文本上限：在 MAX_VALUE=256 内留键名与通道开销余量。 */
     private static final int MAX_CRASH_CHARS = 240;
 
@@ -198,11 +209,96 @@ final class Report {
         }
     }
 
+    /**
+     * 仅测试使用：复位进程级静态状态（UEH 只包一次的闩锁与崩溃环）。
+     * Gradle 单测所有类共用一个 JVM，installCrashHandler / recordCrash 的静态
+     * 状态不复位会让后续用例拿不到已安装的包装链、或读到上一用例残留的崩溃。
+     * 与 TiebaQuiet 的测试隔离口径一致。
+     */
+    static synchronized void resetForTest() {
+        sCrashHandlerInstalled = false;
+        synchronized (CRASH_LOCK) {
+            CRASHES.clear();
+        }
+    }
+
     private static String truncateCrash(String s) {
         if (s == null) {
             return "";
         }
         return s.length() <= MAX_CRASH_CHARS ? s : s.substring(0, MAX_CRASH_CHARS);
+    }
+
+    /**
+     * 节流判定 + 退避判定的读起点：必须在同一把锁内取快照，否则定时线程与
+     * 崩溃线程可能都判定为「该发」并把同一内容回传两次。
+     */
+    private static boolean shouldFlush(Map<String, String> content, long now) {
+        synchronized (FLUSH_LOCK) {
+            boolean changed = !content.equals(sLast);
+            // 内容没变也要按心跳重发，否则 meta.updated_at 会一直停在旧值，
+            // 超过 TTL 后 StatusProvider 会把正常会话误判为过期。
+            if (!changed && now - sLastOk < HEARTBEAT_MS) {
+                return false;
+            }
+            return now >= sNextTry;
+        }
+    }
+
+    /** 回传成功：记录业务内容与时间，并清掉失败残留的 60 秒退避。 */
+    static void noteSuccess(Map<String, String> content, long now) {
+        synchronized (FLUSH_LOCK) {
+            sLast = content;
+            sLastOk = now;
+            // 瞬时失败后残留的退避必须清掉：否则一次 60 秒失败会让后续本应
+            // 立即发出的正常快照被压制最多一分钟（诊断数据被延迟）。
+            sNextTry = 0L;
+        }
+    }
+
+    /**
+     * call() 返回 null / 超时 / 抛异常都视为 provider 暂不可达：退避 60 秒，
+     * 不更新 sLast，下次内容变化或退避到期后再试。失败计数与退避写入都在锁内，
+     * 避免 sErrors++ 丢更新。
+     */
+    static void noteFailure() {
+        synchronized (FLUSH_LOCK) {
+            sNextTry = System.currentTimeMillis() + RETRY_MS;
+            if (sErrors++ < 3) {
+                Log.w(TAG, "status provider unavailable");
+            }
+        }
+    }
+
+    /** 仅供 JVM 单测：一次锁内读回「最近一次成功回传的内容 + 时间」，避免撕裂读。 */
+    static String lastSuccessForTest() {
+        synchronized (FLUSH_LOCK) {
+            return String.valueOf(sLast) + "@" + sLastOk;
+        }
+    }
+
+    /** 仅供 JVM 单测：失败残留的退避截止时间（0 表示无退避）。 */
+    static long nextTryAt() {
+        synchronized (FLUSH_LOCK) {
+            return sNextTry;
+        }
+    }
+
+    /** 仅供 JVM 单测：provider 失败计数。 */
+    static int failureCount() {
+        synchronized (FLUSH_LOCK) {
+            return sErrors;
+        }
+    }
+
+    /** 仅供 JVM 单测：复位回传状态机，避免用例间互相污染。 */
+    static void resetStateForTest() {
+        synchronized (FLUSH_LOCK) {
+            sLast = new TreeMap<>();
+            sLastOk = 0L;
+            sNextTry = 0L;
+            sErrors = 0;
+        }
     }
 
     private static void flush() {
@@ -212,13 +308,7 @@ final class Report {
             return;
         }
         long now = System.currentTimeMillis();
-        boolean changed = !content.equals(sLast);
-        // 内容没变也要按心跳重发，否则 meta.updated_at 会一直停在旧值，
-        // 超过 TTL 后 StatusProvider 会把正常会话误判为过期。
-        if (!changed && now - sLastOk < HEARTBEAT_MS) {
-            return;
-        }
-        if (now < sNextTry) {
+        if (!shouldFlush(content, now)) {
             return;
         }
         Context context = context();
@@ -228,16 +318,10 @@ final class Report {
         Bundle extras = extrasOf(batch);
         Bundle result = callProvider(context, extras);
         if (result != null) {
-            sLast = content;
-            sLastOk = now;
+            noteSuccess(content, now);
             return;
         }
-        // call() 返回 null / 超时 / 抛异常都视为 provider 暂不可达：退避 60 秒，
-        // 不更新 sLast，下次内容变化或退避到期后再试。
-        sNextTry = System.currentTimeMillis() + RETRY_MS;
-        if (sErrors++ < 3) {
-            Log.w(TAG, "status provider unavailable");
-        }
+        noteFailure();
     }
 
     /**
@@ -257,8 +341,7 @@ final class Report {
             Uri uri = Uri.parse("content://" + StatusProvider.AUTHORITY);
             Bundle result = context.getContentResolver().call(uri, "report", null, extras);
             if (result != null) {
-                sLast = contentOf(batch);
-                sLastOk = System.currentTimeMillis();
+                noteSuccess(contentOf(batch), System.currentTimeMillis());
             }
         } catch (Throwable ignored) {
             // 崩溃路径 fail-safe：不向外抛任何异常。

@@ -254,9 +254,11 @@ APK_NATIVE="$(to_native_path "$TARGET_APK")"
 ANCHORS_NATIVE="$(to_native_path "$ANCHORS")"
 DEXSQL_NATIVE="$(to_native_path "$DEXSQL")"
 
-PYTHON="${PYTHON:-python}"
-command -v "$PYTHON" >/dev/null 2>&1 \
-    || die "未找到 python；安装 Python 3 或设置 PYTHON 环境变量"
+# 与同仓 check-anchors.sh / verify-apk.sh 一致：优先 python3，没有再退 python；
+# 都没有时给出明确的 Python 3 安装/PYTHON 覆盖提示，避免只有 python3 的机器上直接 die。
+PYTHON="${PYTHON:-$(command -v python3 || command -v python || true)}"
+[ -n "$PYTHON" ] && command -v "$PYTHON" >/dev/null 2>&1 \
+    || die "未找到 python3/python；安装 Python 3 或设置 PYTHON 环境变量"
 
 CHECK_MOUNTS_REPO_ROOT="$REPO_ROOT" \
 CHECK_MOUNTS_APK="$APK_NATIVE" \

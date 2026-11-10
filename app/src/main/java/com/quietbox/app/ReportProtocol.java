@@ -47,8 +47,19 @@ public final class ReportProtocol {
     public static final long MAX_FUTURE_SKEW_MS = ReportProtocolCore.MAX_FUTURE_SKEW_MS;
 
     static {
-        // 精确白名单：不用 core 的“feature key × 5 前缀”生成式，旧实现就不含
-        // err.*，这里保持逐键恢复（reg/hit/skip/crit × Feature + meta + crash0/1/2）。
+        installWhitelist();
+    }
+
+    /**
+     * 把本模块的精确白名单安装进 core。抽成包级可见方法，供单测在
+     * {@code @Before} 里 {@code resetForTest()} 之后显式重装：core 的进程级配置
+     * 跨测试类共享，任何测试按 core 文档调用 resetForTest()/configure() 都会
+     * 把本类依赖的 reg./hit./skip./crit. 键清空，导致落盘断言集体失败。
+     *
+     * 精确白名单：不用 core 的“feature key × 5 前缀”生成式，旧实现就不含
+     * err.*，这里保持逐键恢复（reg/hit/skip/crit × Feature + meta + crash0/1/2）。
+     */
+    static void installWhitelist() {
         Set<String> allowedKeys = new LinkedHashSet<>();
         for (Feature f : Feature.values()) {
             allowedKeys.add(PREFIX_REG + f.key);

@@ -57,6 +57,19 @@ die() {
     exit 1
 }
 
+# 计算单个归档产物的 SHA-256（与 CMT verify-apk.sh 的 sha256_of 同构）。
+# Windows 无 sha256sum 时退回 certutil；输出统一为小写 64 位十六进制。
+sha256_of() {
+    local f="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$f" | awk '{print $1}'
+    else
+        local win
+        win="$(cygpath -w "$f" 2>/dev/null || printf '%s' "$f")"
+        certutil -hashfile "$win" SHA256 2>/dev/null | sed -n '2p' | tr -d ' \r' | tr 'A-F' 'a-f'
+    fi
+}
+
 usage() {
     sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -289,11 +302,12 @@ mount_gate() {
 mount_gate
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[dry-run] bash %s %s --expected-version %s --expected-code %s --out-dir %s\n' \
-        "$SCRIPT_DIR/verify-apk.sh" "$APK" "$VERSION" "$VERSION_CODE" "$ARTIFACT_DIR"
     printf '[dry-run] cp %s %s/%s\n' "$APK" "$ARTIFACT_DIR" "$(basename "$APK")"
     printf '[dry-run] cp %s %s/mapping.txt\n' "$MAPPING" "$ARTIFACT_DIR"
     printf '[dry-run] write %s/release-notes.md\n' "$ARTIFACT_DIR"
+    printf '[dry-run] bash %s %s --expected-version %s --expected-code %s --out-dir %s\n' \
+        "$SCRIPT_DIR/verify-apk.sh" "$APK" "$VERSION" "$VERSION_CODE" "$ARTIFACT_DIR"
+    printf '[dry-run] 补齐 SHA256SUMS 中 mapping.txt / release-notes.md 的哈希\n'
 fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
@@ -302,13 +316,30 @@ if [ "$DRY_RUN" -eq 0 ]; then
     mkdir -p "$ARTIFACT_DIR"
 
     # ---------- 校验 + 归档 ----------
+    # 先把全部内容资产落到 ARTIFACT_DIR，再跑 verify-apk.sh：CloudMusicTool 的
+    # verify-apk.sh 会对 OUT_DIR 中已存在的 mapping.txt / release-notes.md 逐个记哈希；
+    # 顺序反了清单就只剩 APK，发布时 mapping/notes 零校验。本仓 verify-apk.sh 目前
+    # 仍只写 APK 一项，因此在调用后补齐清单（见下），让 4 类资产全部进 SHA256SUMS。
+    cp "$APK" "$ARTIFACT_DIR/$(basename "$APK")"
+    cp "$MAPPING" "$ARTIFACT_DIR/mapping.txt"
+    printf '%s\n' "$NOTES" > "$ARTIFACT_DIR/release-notes.md"
     bash "$SCRIPT_DIR/verify-apk.sh" "$APK" \
         --expected-version "$VERSION" \
         --expected-code "$VERSION_CODE" \
         --out-dir "$ARTIFACT_DIR"
-    cp "$APK" "$ARTIFACT_DIR/$(basename "$APK")"
-    cp "$MAPPING" "$ARTIFACT_DIR/mapping.txt"
-    printf '%s\n' "$NOTES" > "$ARTIFACT_DIR/release-notes.md"
+    # 本仓 verify-apk.sh 只写 APK 单项：把已归档的 mapping.txt / release-notes.md
+    # 追加进清单（sha256sum -c 可解析的 "<hash>  <basename>" 格式），与 CMT 的
+    # 「逐项哈希」口径对齐。重复行先按文件名去重，保证重跑幂等。
+    for name in mapping.txt release-notes.md; do
+        if [ ! -f "$ARTIFACT_DIR/$name" ]; then
+            die "归档产物缺失，无法写入 SHA256SUMS：$ARTIFACT_DIR/$name"
+        fi
+        if ! grep -q "  $name\$" "$ARTIFACT_DIR/SHA256SUMS"; then
+            sum="$(sha256_of "$ARTIFACT_DIR/$name")"
+            [ -n "$sum" ] || die "无法计算归档产物 SHA-256：$ARTIFACT_DIR/$name"
+            printf '%s  %s\n' "$sum" "$name" >> "$ARTIFACT_DIR/SHA256SUMS"
+        fi
+    done
     log "产物已归档：$ARTIFACT_DIR"
     log "  $(basename "$APK")"
     log "  mapping.txt"
@@ -377,7 +408,7 @@ sync_official_repo() {
         return
     fi
     local official_tag="${VERSION_CODE}-${VERSION}"
-    local work_dir dl_dir apk_name local_sha remote_sha tag_commit head_commit
+    local work_dir dl_dir apk_name tag_commit head_commit
     local -a tracked_apks=()
 
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -392,7 +423,7 @@ sync_official_repo() {
             printf '[dry-run] gh release create %s --repo %s --title %s --notes-file %s/release-notes.md %s %s/mapping.txt %s/SHA256SUMS %s/release-notes.md\n' \
                 "$official_tag" "$OFFICIAL_REPO" "$VERSION" "$ARTIFACT_DIR" \
                 "$(basename "$APK")" "$ARTIFACT_DIR" "$ARTIFACT_DIR" "$ARTIFACT_DIR"
-            printf '[dry-run] gh release download %s 并比对 APK SHA-256\n' "$official_tag"
+            printf '[dry-run] gh release download %s 并按 SHA256SUMS 逐项比对全部资产 SHA-256\n' "$official_tag"
         fi
         return
     fi
@@ -462,17 +493,24 @@ sync_official_repo() {
             "$APK" "$ARTIFACT_DIR/mapping.txt" "$ARTIFACT_DIR/SHA256SUMS" "$ARTIFACT_DIR/release-notes.md"
     fi
 
-    # ---------- 下载官方仓资产，与本地 APK 比对 SHA-256 ----------
+    # ---------- 下载官方仓全部资产，按文件名逐项比对 SHA-256 ----------
+    # 不再只下 *.apk + head -1：Release 上传了 APK / mapping.txt / SHA256SUMS /
+    # release-notes.md 四类资产，旧逻辑对 mapping/notes 零校验且多 APK 时会比对错对象。
     dl_dir="$(mktemp -d)"
     CLEANUP_DIRS+=("$dl_dir")
     gh release download "$official_tag" --repo "$OFFICIAL_REPO" \
-        --pattern '*.apk' --dir "$dl_dir" --clobber
-    local_sha="$(sha256sum "$APK" | awk '{print $1}')"
-    remote_sha="$(sha256sum "$dl_dir"/*.apk | awk '{print $1}' | head -1)"
-    if [ "$local_sha" = "$remote_sha" ]; then
-        log "官方仓资产 SHA-256 一致：$local_sha"
+        --dir "$dl_dir" --clobber
+    # 清单本身必须逐字节一致：sha256sum -c 只校验「清单里列出的文件」，若远端
+    # 清单被删行/篡改后重新下载，逐项比对会漏检；先 cmp 锁死清单再回验。
+    if ! cmp -s "$ARTIFACT_DIR/SHA256SUMS" "$dl_dir/SHA256SUMS"; then
+        die "官方仓 SHA256SUMS 与本地归档不一致（资产清单被替换或删行）"
+    fi
+    # 在下载目录内按清单逐个校验（清单用相对文件名，覆盖 APK/mapping/notes）；
+    # 任一资产缺失、被替换或旧 APK 混入都会让 sha256sum -c 非 0。
+    if (cd "$dl_dir" && sha256sum -c "$ARTIFACT_DIR/SHA256SUMS"); then
+        log "官方仓全部资产 SHA-256 一致（$(wc -l < "$ARTIFACT_DIR/SHA256SUMS" | tr -d ' ') 项）"
     else
-        die "官方仓资产 SHA-256 不一致：本地 $local_sha / 远端 $remote_sha"
+        die "官方仓资产 SHA-256 不一致（按 SHA256SUMS 逐项比对失败）"
     fi
 }
 

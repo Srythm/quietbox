@@ -8,9 +8,12 @@ import static org.junit.Assert.assertTrue;
 
 import android.os.Bundle;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Arrays;
+
+import io.github.yigenhuobah.core.ReportProtocolCore;
 
 /**
  * StatusProvider 落盘核心的直接覆盖：call() 里的会话判定、新会话清库与合并写入
@@ -44,6 +47,18 @@ public class StatusProviderTest {
     /** 与 StatusProvider 写盘一致：所有值都带 "v:" 前缀。 */
     private static String v(String key) {
         return "v:" + key;
+    }
+
+    /**
+     * 把 core 的进程级白名单配置纳入本类控制：先按 core 文档 resetForTest() 隔离
+     * 其他测试类可能留下的状态，再显式重装本模块的白名单。否则任何按文档调用
+     * resetForTest()/configure() 的测试都会让本类所有 reg./hit./skip./crit. 键
+     * validKey==false，落盘断言以「键不合法、值不落盘」的形式集体失败。
+     */
+    @Before
+    public void setUp() {
+        ReportProtocolCore.resetForTest();
+        ReportProtocol.installWhitelist();
     }
 
     /** 新会话首传：清掉上一会话全部逐功能数据，再按本批落地（含空串覆盖）。 */

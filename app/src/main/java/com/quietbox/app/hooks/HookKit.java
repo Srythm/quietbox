@@ -261,6 +261,17 @@ final class HookKit {
             warn(module, f.id + " skip: method not found "
                     + (cls == null ? "?" : cls.getName()) + "#" + name + "/" + arity + " 未找到");
             HookState.markNotFound(f, "方法未找到 " + name);
+            return null;
+        }
+        // F102：本入口只按名字+参数个数解析，调用方（ContactSyncHooks#3）用的是固定返回
+        // null 的 hooker；返回 primitive 会在宿主方法体内拆箱崩溃。引用类型/void 仍放行，
+        // primitive 按未找到处理，让挂载点显式 skip 而不是装上后崩在宿主调用栈。
+        Class<?> rt = m.getReturnType();
+        if (rt.isPrimitive() && rt != void.class) {
+            warn(module, f.id + " skip: primitive return for name-only mount "
+                    + (cls == null ? "?" : cls.getName()) + "#" + name + "/" + arity + " -> " + rt);
+            HookState.markNotFound(f, "返回类型不匹配 " + name);
+            return null;
         }
         return m;
     }
@@ -401,6 +412,14 @@ final class HookKit {
             HookState.markNotFound(f, "框架类黑名单 " + declaring);
             return false;
         }
+        // F102：固定返回形态的 hooker（skipVoid/constBool）必须在挂载前比对目标返回类型，
+        // 避免宿主版本漂移后把返回 null/常量的 hooker 装到 primitive 方法上，在宿主
+        // 方法体内拆箱崩溃（报错点在宿主调用栈，PROTECTIVE 未必兜住）。
+        if (!returnTypeMatches(m, hooker)) {
+            warn(module, f.id + " skip: return type mismatch " + label + " -> " + m);
+            HookState.markNotFound(f, "返回类型不匹配 " + label);
+            return false;
+        }
         try {
             module.hook(m)
                     .setId(f.id + "#" + label)
@@ -414,6 +433,29 @@ final class HookKit {
             HookState.markNotFound(f, "hook 失败 " + label);
             return false;
         }
+    }
+
+    /**
+     * F102：hooker 的固定返回形态是否与目标方法返回类型相容。
+     *
+     * <p>只约束显式标记的 {@link VoidReturnHooker}/{@link BoolReturnHooker}；其余
+     * （proceed 型）hooker 返回宿主结果，不做限制。构造器返回类型按 void 处理。
+     *
+     * <p>包级可见：由 HookKitReturnTypeTest 锁定判定口径。
+     */
+    static boolean returnTypeMatches(@Nullable java.lang.reflect.Executable m,
+                                     XposedInterface.Hooker hooker) {
+        if (m == null) {
+            return true;
+        }
+        Class<?> rt = m instanceof Method ? ((Method) m).getReturnType() : void.class;
+        if (hooker instanceof VoidReturnHooker) {
+            return rt == void.class;
+        }
+        if (hooker instanceof BoolReturnHooker) {
+            return rt == boolean.class || rt == Boolean.class;
+        }
+        return true;
     }
 
     /**
@@ -434,9 +476,20 @@ final class HookKit {
         }
     }
 
+    /**
+     * F102：标记「固定返回 null（void）」的 hooker，供 install 在挂载前校验目标返回类型。
+     * 匿名实现仍形如 HookKit$N（非合成类），不违反 DESIGN §14 第 1 条。
+     */
+    interface VoidReturnHooker extends XposedInterface.Hooker {
+    }
+
+    /** F102：标记「固定返回布尔常量」的 hooker，供 install 在挂载前校验目标返回类型。 */
+    interface BoolReturnHooker extends XposedInterface.Hooker {
+    }
+
     /** void 方法：不 proceed 即原方法体不执行。 */
     static XposedInterface.Hooker skipVoid(XposedModule module, Feature f, String detail) {
-        return new XposedInterface.Hooker() {
+        return new VoidReturnHooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
                 try {
@@ -453,7 +506,7 @@ final class HookKit {
     /** 布尔方法：直接给常量，不 proceed。 */
     static XposedInterface.Hooker constBool(XposedModule module, Feature f, String detail,
                                             boolean value) {
-        return new XposedInterface.Hooker() {
+        return new BoolReturnHooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
                 try {

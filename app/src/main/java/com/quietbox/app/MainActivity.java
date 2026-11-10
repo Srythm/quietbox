@@ -20,9 +20,10 @@ import com.google.android.material.color.DynamicColors;
 /**
  * 单 Activity 外壳：工具栏 + 四个顶层 tab（设置 / 测试 / 诊断 / 关于）+ 常驻底栏。
  *
- * 四个 Fragment 首次创建时一次性 add，切换只用 hide/show，因此各自的
- * Preference 滚动位置与控件状态都会保留。设置是默认 tab，返回键在任何
- * 非设置 tab 上都先回到设置，只有在设置页才退出应用。
+ * 设置/诊断/关于三个 Fragment 首次创建时一次性 add，切换只用 hide/show，因此各自的
+ * Preference 滚动位置与控件状态都会保留；「测试」tab 按需创建（其 onCreatePreferences
+ * 会同步做两次 remote prefs binder，不该让从不打开测试页的用户也承担）。设置是默认
+ * tab，返回键在任何非设置 tab 上都先回到设置，只有在设置页才退出应用。
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -59,15 +60,16 @@ public class MainActivity extends AppCompatActivity {
 
         if (savedInstanceState == null) {
             Fragment settings = new SettingsFragment();
-            Fragment test = new AbTestFragment();
             Fragment diagnostics = new DiagnosticsFragment();
             Fragment about = new AboutFragment();
-            // commitNow：底栏恢复选中态之前，四个 Fragment 必须已经就位，
+            // commitNow：底栏恢复选中态之前，默认可见的 Fragment 必须已经就位，
             // 否则 setSelectedItemId 触发的回调会重复 add。
+            // 「测试」tab 按需创建：AbTestFragment.onCreatePreferences 会同步构造
+            // ConfigStore/AbConfigStore（两次 getRemotePreferences binder），一次性 add
+            // 会让从不打开测试页的用户也在主线程/每次 Activity 重建时白付这两次 binder。
+            // switchTab 已支持 target==null 时 createFragment+add，首次切到测试页才构造。
             getSupportFragmentManager().beginTransaction()
                     .add(R.id.settings_container, settings, TAG_SETTINGS)
-                    .add(R.id.settings_container, test, TAG_TEST)
-                    .hide(test)
                     .add(R.id.settings_container, diagnostics, TAG_DIAGNOSTICS)
                     .hide(diagnostics)
                     .add(R.id.settings_container, about, TAG_ABOUT)

@@ -55,16 +55,22 @@ final class FakeSharedPreferences implements SharedPreferences {
         return mValues;
     }
 
+    /** 读失败注入统一入口：所有读方法一致生效，避免只有两个方法能触发生产侧 catch（F-113）。 */
+    private void checkThrowOnRead() {
+        if (mThrowOnRead) {
+            throw new IllegalStateException("read boom");
+        }
+    }
+
     @Override
     public Map<String, ?> getAll() {
+        checkThrowOnRead();
         return new HashMap<>(mValues);
     }
 
     @Override
     public String getString(String key, String defValue) {
-        if (mThrowOnRead) {
-            throw new IllegalStateException("read boom");
-        }
+        checkThrowOnRead();
         Object v = mValues.get(key);
         return v instanceof String ? (String) v : defValue;
     }
@@ -72,39 +78,42 @@ final class FakeSharedPreferences implements SharedPreferences {
     @SuppressWarnings("unchecked")
     @Override
     public Set<String> getStringSet(String key, Set<String> defValues) {
+        checkThrowOnRead();
         Object v = mValues.get(key);
         return v instanceof Set ? new HashSet<>((Set<String>) v) : defValues;
     }
 
     @Override
     public int getInt(String key, int defValue) {
+        checkThrowOnRead();
         Object v = mValues.get(key);
         return v instanceof Integer ? (Integer) v : defValue;
     }
 
     @Override
     public long getLong(String key, long defValue) {
+        checkThrowOnRead();
         Object v = mValues.get(key);
         return v instanceof Long ? (Long) v : defValue;
     }
 
     @Override
     public float getFloat(String key, float defValue) {
+        checkThrowOnRead();
         Object v = mValues.get(key);
         return v instanceof Float ? (Float) v : defValue;
     }
 
     @Override
     public boolean getBoolean(String key, boolean defValue) {
-        if (mThrowOnRead) {
-            throw new IllegalStateException("read boom");
-        }
+        checkThrowOnRead();
         Object v = mValues.get(key);
         return v instanceof Boolean ? (Boolean) v : defValue;
     }
 
     @Override
     public boolean contains(String key) {
+        checkThrowOnRead();
         return mValues.containsKey(key);
     }
 

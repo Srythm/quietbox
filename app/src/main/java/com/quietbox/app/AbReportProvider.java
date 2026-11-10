@@ -60,6 +60,22 @@ public final class AbReportProvider extends ContentProvider {
             return null;
         }
         SharedPreferences sp = getContext().getSharedPreferences(PREFS, 0);
+        // 有条目被校验拒绝 / 被 MAX_ITEMS 截断时不能再返回「成功」空 Bundle：
+        // 宿主 AbTestHooks.flush 只要 result != null 就把整批 keys 全部标记为已上报，
+        // 被丢的探测值会永久消失。返回 null 复用现有「provider 不可达」语义，
+        // 让宿主退避重试，收下的条目仍在 apply() 里落盘（重发幂等）。
+        return applyReport(sp, keys, values) ? new Bundle() : null;
+    }
+
+    /**
+     * report 批次的校验与写入（包级可见，纯 JVM 可测）：逐条校验 key/value，
+     * 收下的条目落盘，返回「整批是否全部收下」。false 表示有条目被拒绝或截断，
+     * 调用方必须据此返回 null 触发宿主退避重试，不能谎报成功。
+     */
+    static boolean applyReport(SharedPreferences sp, String[] keys, String[] values) {
+        if (keys == null || values == null || keys.length != values.length) {
+            return false;
+        }
         SharedPreferences.Editor editor = sp.edit();
         int accepted = 0;
         for (int i = 0; i < keys.length && accepted < MAX_ITEMS; i++) {
@@ -76,7 +92,7 @@ public final class AbReportProvider extends ContentProvider {
             editor.putLong("t", System.currentTimeMillis());
             editor.apply();
         }
-        return new Bundle();
+        return accepted == keys.length;
     }
 
     private static boolean validKey(String key) {

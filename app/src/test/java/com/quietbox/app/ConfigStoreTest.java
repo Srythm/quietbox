@@ -28,6 +28,28 @@ public class ConfigStoreTest {
         assertFalse("remote 不可用时不能写本地冒充成功", local.contains("k"));
     }
 
+    /**
+     * remote 不可用时「用户点了开关」的真实链路（SettingsFragment.writeBoolean 走的是
+     * 三参 put(key,value,callback)）：必须返回 false、不触发回调、不写本地。
+     */
+    @Test
+    public void remoteUnavailableThreeArgPutReturnsFalseAndDoesNotTouchLocal() throws Exception {
+        FakeSharedPreferences local = new FakeSharedPreferences();
+        ConfigStore store = new ConfigStore(null, local);
+        AtomicBoolean callbackFired = new AtomicBoolean(false);
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertFalse("remote 不可用时三参 put 必须返回 false",
+                store.put("k", true, committed -> {
+                    callbackFired.set(true);
+                    done.countDown();
+                }));
+        assertFalse("未提交就不能通知回调（CountDownLatch 仍是 1）",
+                done.await(200, TimeUnit.MILLISECONDS));
+        assertFalse("回调绝不能被触发", callbackFired.get());
+        assertFalse("remote 不可用时三参 put 也不能写本地冒充成功", local.contains("k"));
+    }
+
     @Test
     public void remoteCommitSuccessReportsTrueAndWritesValue() throws Exception {
         FakeSharedPreferences remote = new FakeSharedPreferences();
@@ -66,7 +88,8 @@ public class ConfigStoreTest {
     public void remoteCommitThrowReportsFailure() throws Exception {
         FakeSharedPreferences remote = new FakeSharedPreferences();
         remote.setThrowOnCommit(true);
-        ConfigStore store = new ConfigStore(remote, new FakeSharedPreferences());
+        FakeSharedPreferences local = new FakeSharedPreferences();
+        ConfigStore store = new ConfigStore(remote, local);
         AtomicBoolean result = new AtomicBoolean(true);
         CountDownLatch done = new CountDownLatch(1);
 
@@ -76,6 +99,8 @@ public class ConfigStoreTest {
         }));
         assertTrue(done.await(5, TimeUnit.SECONDS));
         assertFalse("commit 抛异常必须回调失败", result.get());
+        assertFalse("抛异常路径同样不能落盘", remote.contains("k"));
+        assertFalse("抛异常路径更不能回退写本地冒充成功", local.contains("k"));
     }
 
     @Test
@@ -308,7 +333,8 @@ public class ConfigStoreTest {
     public void resetCommitFailureReportsFalse() throws Exception {
         FakeSharedPreferences remote = new FakeSharedPreferences();
         remote.setCommitResult(false);
-        ConfigStore store = new ConfigStore(remote, new FakeSharedPreferences());
+        FakeSharedPreferences local = new FakeSharedPreferences();
+        ConfigStore store = new ConfigStore(remote, local);
         AtomicBoolean result = new AtomicBoolean(true);
         CountDownLatch done = new CountDownLatch(1);
 
@@ -319,5 +345,7 @@ public class ConfigStoreTest {
         assertTrue(done.await(5, TimeUnit.SECONDS));
         assertFalse("commit 返回 false 必须回调失败", result.get());
         assertFalse(remote.contains(Config.KEY_CONFIG_VERSION));
+        assertFalse("reset 失败不能回退写本地冒充成功",
+                local.contains(Config.KEY_CONFIG_VERSION));
     }
 }

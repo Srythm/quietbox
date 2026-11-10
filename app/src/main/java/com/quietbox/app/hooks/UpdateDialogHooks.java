@@ -1,6 +1,7 @@
 package com.quietbox.app.hooks;
 
 import com.quietbox.app.Feature;
+import com.quietbox.app.HookState;
 import com.quietbox.app.anchor.AnchorKeys;
 
 import java.lang.reflect.Method;
@@ -23,13 +24,25 @@ final class UpdateDialogHooks {
         try {
             Method onCreate = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.UPDATE_DIALOG_ON_CREATE, true);
+            // onCreate 是 Activity 生命周期唯一入口，缺失即整个弹窗屏蔽失效。
+            // findAnchorMethod(..., true) 已记 critical；install 收到 null 时还会再记一条
+            // 普通 skip，这里显式补 critical，保证失败横幅一定亮（即便 UI-04 会话里
+            // 还有别的挂载点注册成功）。
+            if (onCreate == null) {
+                HookState.markNotFoundCritical(f, "锚点未找到 " + AnchorKeys.UPDATE_DIALOG_ON_CREATE);
+            }
             HookKit.install(module, f, "onCreate", onCreate,
                     HookKit.finishThenProceed(module, f, "onCreate(finish)", null));
             Method he = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.UPDATE_DIALOG_HE, true);
+            if (he == null) {
+                HookState.markNotFoundCritical(f, "锚点未找到 " + AnchorKeys.UPDATE_DIALOG_HE);
+            }
             HookKit.install(module, f, "he", he, HookKit.skipVoid(module, f, "he"));
         } catch (Throwable t) {
             HookKit.error(module, f.id + " install aborted", t);
+            // install 整段抛错时 UI-04 也必须进失败横幅，不能静默。
+            HookState.markNotFoundCritical(f, "安装异常 " + t);
         }
     }
 }

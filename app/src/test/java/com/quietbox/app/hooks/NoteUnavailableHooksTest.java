@@ -138,7 +138,9 @@ public class NoteUnavailableHooksTest {
         assertEquals("note_feed", AnchorKeys.NOTE_FEED);
         Path source = TestPaths.resolveFromCwd(
                 "src/main/java/com/quietbox/app/hooks/NoteUnavailableHooks.java",
-                "app/src/main/java/com/quietbox/app/hooks/NoteUnavailableHooks.java");
+                "app/src/main/java/com/quietbox/app/hooks/NoteUnavailableHooks.java",
+                "project/app/src/main/java/com/quietbox/app/hooks/NoteUnavailableHooks.java",
+                "QuietBox/project/app/src/main/java/com/quietbox/app/hooks/NoteUnavailableHooks.java");
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
         assertFalse("未使用的 FEED 锚点常量不得被本文件引用",
                 text.contains("AnchorKeys.NOTE_FEED"));

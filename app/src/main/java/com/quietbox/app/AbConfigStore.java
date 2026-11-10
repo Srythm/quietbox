@@ -75,32 +75,60 @@ final class AbConfigStore {
         return mReport.getBoolean(AbReportProvider.KEY_PANEL_ENABLED, false);
     }
 
-    /** 把本地副本对齐到 remote 的真实值（升级或清数据后可能不一致）。 */
+    /**
+     * 把本地副本对齐到 remote 的真实值（升级或清数据后可能不一致）。
+     *
+     * <p>「读 remote + 写 mReport」整段提交到 {@link ConfigWrites} 的同一后台单线程：
+     * 与 setPanelEnabled/setForced 的 mirror 写入严格串行，避免主线程用「调用时读到的旧 remote
+     * 快照」覆盖后台线程刚 mirror 的新值（否则活通道会回退到旧值）。执行时重读
+     * remote 现值，以提交顺序里最后一个值为准。
+     */
     void syncPanelEnabled(boolean enabled) {
         if (mRemote == null) {
             // 没有 remote 说明写不进宿主，冷启动时本地回退值不能覆盖活通道。
             return;
         }
-        if (panelEnabled() != enabled) {
-            mReport.edit().putBoolean(AbReportProvider.KEY_PANEL_ENABLED, enabled).apply();
+        final SharedPreferences remote = mRemote;
+        if (!ConfigWrites.submit(() -> {
+            boolean current = enabled;
+            try {
+                current = remote.getBoolean(Feature.AB_TEST_PANEL.key, enabled);
+            } catch (Throwable t) {
+                Log.w(TAG, "sync panel read failed", t);
+            }
+            if (panelEnabled() != current) {
+                mReport.edit().putBoolean(AbReportProvider.KEY_PANEL_ENABLED, current).apply();
+            }
+        })) {
+            Log.w(TAG, "sync panel queue rejected");
         }
     }
 
-    /** 把 remote 里的覆盖表同步到本地副本，供宿主运行中通过 provider 拉取。 */
+    /**
+     * 把 remote 里的覆盖表同步到本地副本，供宿主运行中通过 provider 拉取。
+     *
+     * <p>与 {@link #syncPanelEnabled(boolean)} 一样整段提交到 {@link ConfigWrites}
+     * 单线程，保证同一 key 的 remote 写入、镜像写入、sync 写入严格按同一顺序执行。
+     */
     void syncOverrides() {
         if (mRemote == null) {
             return;
         }
-        try {
-            String raw = mRemote.getString(Config.KEY_AB_OVERRIDES, "");
-            if (raw == null) {
-                raw = "";
+        final SharedPreferences remote = mRemote;
+        if (!ConfigWrites.submit(() -> {
+            try {
+                String raw = remote.getString(Config.KEY_AB_OVERRIDES, "");
+                if (raw == null) {
+                    raw = "";
+                }
+                if (!raw.equals(mReport.getString(AbReportProvider.KEY_OVERRIDES, ""))) {
+                    mReport.edit().putString(AbReportProvider.KEY_OVERRIDES, raw).apply();
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "sync overrides failed", t);
             }
-            if (!raw.equals(mReport.getString(AbReportProvider.KEY_OVERRIDES, ""))) {
-                mReport.edit().putString(AbReportProvider.KEY_OVERRIDES, raw).apply();
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "sync overrides failed", t);
+        })) {
+            Log.w(TAG, "sync overrides queue rejected");
         }
     }
 

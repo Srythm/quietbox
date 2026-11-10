@@ -32,7 +32,7 @@ public class AppInfoTest {
 
     /** versionName() 私有复制：曾有 4 份逐字相同，现在只允许 Config 之外的 0 份。 */
     private static final SourceScan.Rule NO_PRIVATE_VERSION_NAME = new SourceScan.Rule(
-            "private\\s+String\\s+versionName\\s*\\(",
+            "(?:private\\s+)?(?:static\\s+)?(?:final\\s+)?String\\s+versionName\\s*\\(",
             "versionName() 必须统一走 AppInfo，不能在页面里复制");
 
     /** 目标包名硬编码：只允许 AppInfo 一处（其余文件必须引用 AppInfo.TARGET_PACKAGE）。 */
@@ -68,15 +68,31 @@ public class AppInfoTest {
     public void noPageDefinesItsOwnVersionNameMethod() throws IOException {
         List<SourceScan.Finding> findings = SourceScan.scan(
                 mainJava(), NO_PRIVATE_VERSION_NAME);
-        assertTrue("页面不得再复制 versionName()（改用 AppInfo.versionName）：" + findings,
-                findings.isEmpty());
+        // AppInfo.java 是唯一允许的定义处；放宽正则后它也会命中，须显式豁免，
+        // 其余任何文件（页面/Provider/Module）都不得再复制 versionName()。
+        List<SourceScan.Finding> pages = new java.util.ArrayList<>();
+        for (SourceScan.Finding f : findings) {
+            if (!"com/quietbox/app/AppInfo.java".equals(f.file)) {
+                pages.add(f);
+            }
+        }
+        assertTrue("页面不得再复制 versionName()（改用 AppInfo.versionName）：" + pages,
+                pages.isEmpty());
+        assertEquals("AppInfo.java 必须保留唯一的 versionName() 定义",
+                1, findings.size() - pages.size());
     }
 
     /** 规则本身必须能命中旧写法，避免正则改坏后门禁静默通过。 */
     @Test
     public void privateVersionNameRuleCatchesLegacyCopy() {
-        String legacy = "class A { private String versionName() { return \"?\"; } }";
-        assertEquals(1, SourceScan.scanSource(legacy, "A.java", NO_PRIVATE_VERSION_NAME).size());
+        for (String legacy : new String[]{
+                "class A { private String versionName() { return \"?\"; } }",
+                "class A { private static String versionName(Context c) { return \"?\"; } }",
+                "class A { static String versionName(Context c) { return \"?\"; } }",
+                "class A { private static final String versionName(Context c) { return \"?\"; } }"}) {
+            assertEquals("带 static/final 修饰符的复制也必须命中: " + legacy,
+                    1, SourceScan.scanSource(legacy, "A.java", NO_PRIVATE_VERSION_NAME).size());
+        }
     }
 
     /** F-057：导出/复制相关的用户可见中文文案必须全部进 strings.xml，Java 不写中文字面量。 */
@@ -101,13 +117,98 @@ public class AppInfoTest {
         Path diag = mainJava().resolve("com/quietbox/app/DiagnosticsFragment.java");
         String source = new String(Files.readAllBytes(diag), StandardCharsets.UTF_8);
         // 中文 UI 字面量（导出标题/失败 Toast/分段名等）不得再出现在 Java 里。
-        for (String banned : new String[]{
-                "导出诊断包\"", "诊断包导出失败\"", "最近崩溃:\"",
-                "\"\\n[功能状态]\\n\"", "\"\\n[最近命中]\\n\"", "\"\\n[最近崩溃]\\n\""}) {
-            assertFalse("DiagnosticsFragment 不得硬编码用户可见中文文案：" + banned,
-                    source.contains(banned));
-        }
+        // 通用规则：遮罩掉注释后，代码（含字符串字面量）里仍含任一 CJK 字符即失败，
+        // 不再靠 6 条只锚定右引号的黑名单字面量（未枚举的文案可静默绕过）。
+        assertFalse("DiagnosticsFragment 不得硬编码用户可见中文文案："
+                        + "遮罩注释后代码里仍含 CJK 字符",
+                containsCjkOutsideComments(source));
         assertTrue("段名必须由 strings.xml 资源传入 joinExportText",
                 source.contains("R.string.diag_export_section_features"));
     }
+
+    /** 通用规则自检：未枚举的中文文案必须被抓住，注释里的中文必须被遮罩。 */
+    @Test
+    public void cjkRuleCatchesAnyChineseLiteralAndIgnoresComments() {
+        assertTrue("任何中文字符串字面量都必须命中（不再依赖黑名单）",
+                containsCjkOutsideComments("String s = \"诊断数据为空\";"));
+        assertTrue("导出失败这类旧黑名单漏掉的写法也必须命中",
+                containsCjkOutsideComments("String s = \"导出诊断包失败\";"));
+        assertFalse("纯注释里的中文必须被遮罩，不得误报",
+                containsCjkOutsideComments("// 导出诊断包\n/* 最近崩溃 */\nString s = \"ok\";"));
+        assertFalse("英文代码不含 CJK 时不得误报",
+                containsCjkOutsideComments("String s = \"plain ascii\";"));
+    }
+
+    /** 遮罩行注释/块注释（保留字符串字面量与字符字面量），返回剩余代码是否含 CJK。 */
+    private static boolean containsCjkOutsideComments(String source) {
+        return CJK.matcher(maskComments(source)).find();
+    }
+
+    /** 与 SourceScan.maskNonCode 同口径的注释遮罩：只抹注释，字符串内容原样保留。 */
+    private static String maskComments(String source) {
+        char[] out = source.toCharArray();
+        int length = out.length;
+        boolean inString = false;
+        boolean inChar = false;
+        boolean lineComment = false;
+        boolean blockComment = false;
+        for (int i = 0; i < length; i++) {
+            char c = source.charAt(i);
+            char next = i + 1 < length ? source.charAt(i + 1) : '\0';
+            if (lineComment) {
+                if (c == '\n') {
+                    lineComment = false;
+                } else {
+                    out[i] = ' ';
+                }
+                continue;
+            }
+            if (blockComment) {
+                if (c == '*' && next == '/') {
+                    out[i] = ' ';
+                    out[i + 1] = ' ';
+                    i++;
+                    blockComment = false;
+                } else if (c != '\n') {
+                    out[i] = ' ';
+                }
+                continue;
+            }
+            if (inString) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (inChar) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == '\'') {
+                    inChar = false;
+                }
+                continue;
+            }
+            if (c == '/' && next == '/') {
+                out[i] = ' ';
+                out[i + 1] = ' ';
+                i++;
+                lineComment = true;
+            } else if (c == '/' && next == '*') {
+                out[i] = ' ';
+                out[i + 1] = ' ';
+                i++;
+                blockComment = true;
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '\'') {
+                inChar = true;
+            }
+        }
+        return new String(out);
+    }
+
+    private static final java.util.regex.Pattern CJK =
+            java.util.regex.Pattern.compile("[\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]");
 }

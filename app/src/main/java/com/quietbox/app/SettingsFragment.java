@@ -13,7 +13,9 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceFragmentCompat;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -362,7 +364,7 @@ public class SettingsFragment extends PreferenceFragmentCompat {
         });
     }
 
-    /** 主线程：用已构造好的 store 刷新开关/状态卡/横幅，不再触发 binder。 */
+    /** 主线程：刷新状态卡/横幅；开关值的 remote prefs 批量回读交给后台线程。 */
     private void applyRefresh(XposedService service) {
         boolean writable = mStore != null && mStore.remote();
 
@@ -378,12 +380,53 @@ public class SettingsFragment extends PreferenceFragmentCompat {
             }
         }
 
+        // F097：mStore.get() 读的是框架 remote prefs（同步 binder / IPC），19 次逐 key
+        // 回读不能留在主线程。与状态卡/横幅一致：批量读放 STATUS_EXECUTOR，结果回
+        // 主线程只做 UI 更新。map 在后台构造、主线程只读，不发布未完成引用。
+        final Activity host = getActivity();
+        if (host != null) {
+            final ConfigStore store = mStore;
+            STATUS_EXECUTOR.execute(() -> {
+                final Map<String, Boolean> values = readSwitchValues(store);
+                host.runOnUiThread(() -> {
+                    if (!isAdded() || getActivity() != host) {
+                        return;
+                    }
+                    applySwitchValues(values);
+                });
+            });
+        }
+
+        updateBanner();
+    }
+
+    /**
+     * F097：一次性批量回读所有开关值（remote prefs 同步读），只由后台线程调用。
+     * 抽成包级静态方法供纯 JVM 单测用 {@link FakeSharedPreferences} 覆盖：
+     * store 为 null 时返回空 map，由 {@link #applySwitchValues} 回落编译期默认值。
+     */
+    static Map<String, Boolean> readSwitchValues(ConfigStore store) {
+        Map<String, Boolean> values = new HashMap<>();
+        if (store == null) {
+            return values;
+        }
+        for (Feature f : Feature.values()) {
+            values.put(f.key, store.get(f.key, f.defaultEnabled));
+        }
+        values.put(Config.KEY_STRIP_XSEC_TOKEN,
+                store.get(Config.KEY_STRIP_XSEC_TOKEN, Config.DEFAULT_STRIP_XSEC_TOKEN));
+        return values;
+    }
+
+    /** 主线程：把后台批量回读的开关值落到 Preference，不再触发任何 remote prefs 读。 */
+    private void applySwitchValues(Map<String, Boolean> values) {
+        boolean writable = mStore != null && mStore.remote();
         for (Feature f : Feature.values()) {
             Preference p = findPreference(f.key);
             if (p instanceof MaterialSwitchPreference) {
                 MaterialSwitchPreference sw = (MaterialSwitchPreference) p;
-                boolean checked = mStore != null
-                        ? mStore.get(f.key, f.defaultEnabled) : f.defaultEnabled;
+                boolean checked = values.containsKey(f.key)
+                        ? values.get(f.key) : f.defaultEnabled;
                 // 回读值只作为「还没有确认值」时的回滚基线。写失败后
                 // RemotePreferences 内存已是未落盘的新值，不能直接回灌 UI；
                 // 有在途写入时保留用户刚做的乐观选择，等回调确认或回滚。
@@ -399,9 +442,8 @@ public class SettingsFragment extends PreferenceFragmentCompat {
         Preference token = findPreference(Config.KEY_STRIP_XSEC_TOKEN);
         if (token instanceof MaterialSwitchPreference) {
             MaterialSwitchPreference sw = (MaterialSwitchPreference) token;
-            boolean checked = mStore != null
-                    ? mStore.get(Config.KEY_STRIP_XSEC_TOKEN, Config.DEFAULT_STRIP_XSEC_TOKEN)
-                    : Config.DEFAULT_STRIP_XSEC_TOKEN;
+            boolean checked = values.containsKey(Config.KEY_STRIP_XSEC_TOKEN)
+                    ? values.get(Config.KEY_STRIP_XSEC_TOKEN) : Config.DEFAULT_STRIP_XSEC_TOKEN;
             mWriteGate.seed(Config.KEY_STRIP_XSEC_TOKEN, checked);
             if (!mWriteGate.isPending(Config.KEY_STRIP_XSEC_TOKEN)) {
                 sw.setCheckedValue(mWriteGate.rollback(Config.KEY_STRIP_XSEC_TOKEN, checked));
@@ -411,8 +453,6 @@ public class SettingsFragment extends PreferenceFragmentCompat {
             // writable=false 的置灰由父开关传播（MaterialSwitchPreference.shouldDisableDependents
             // 把 !isEnabled() 也算作 disableDependents）。
         }
-
-        updateBanner();
     }
 
     /**

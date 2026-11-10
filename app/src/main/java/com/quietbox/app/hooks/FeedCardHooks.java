@@ -41,6 +41,9 @@ final class FeedCardHooks {
     /** 诊断用：每个入口只记一次"被调用过"，确认挂载点真的在链路上。 */
     private static final Set<String> SEEN = new HashSet<>();
 
+    /** 诊断用：vote 的「无 modelType、无字段兜底」降级每个 (feature, 类型) 只记一次。 */
+    private static final Set<String> VOTE_NO_FALLBACK_WARNED = new HashSet<>();
+
     /** 诊断用：记录出现过的 modelType 取值（每个取值一次，最多 64 个）。 */
     private static final Set<String> MODEL_SEEN = new HashSet<>();
 
@@ -131,13 +134,34 @@ final class FeedCardHooks {
         HookKit.info(module, f.id + " seen " + where + " size=" + size);
     }
 
+    /**
+     * 投票卡无字段兜底：modelType 缺失时只能返回 false。此路径没有任何 hit/
+     * markNotFound 记账，字段一旦迁移就永久静默失效。用 HookState.note 把「当前
+     * 生效的判定依据（无 modelType、无字段兜底）」写进诊断账本，按 (feature, 类型)
+     * 去重，避免每个 item 刷一条。note 只进日志/账本，不改动过滤结果。
+     */
+    private static void warnVoteNoFallbackOnce(XposedModule module, Feature f,
+                                               Class<?> noteClass) {
+        synchronized (VOTE_NO_FALLBACK_WARNED) {
+            if (!VOTE_NO_FALLBACK_WARNED.add(f.id + " " + noteClass.getName())) {
+                return;
+            }
+        }
+        String reason = "vote 判定缺 modelType 且无字段兜底（"
+                + noteClass.getName() + "），AD-10 可能静默失效";
+        if (module != null) {
+            HookKit.warn(module, f.id + " " + reason);
+        }
+        HookState.note(f, reason);
+    }
+
     private static int drop(XposedModule module, Feature f, List<?> list, String kind) {
         int removed = 0;
         try {
             Iterator<?> it = list.iterator();
             while (it.hasNext()) {
                 Object note = it.next();
-                if (note != null && matches(f, note, kind)) {
+                if (note != null && matches(module, f, note, kind)) {
                     it.remove();
                     removed++;
                 }
@@ -154,7 +178,7 @@ final class FeedCardHooks {
      * 判定某一类卡片：modelType 非空时只按类型判定；缺失（null 或空串）时才用字段兜底。
      * 投票卡无字段兜底。
      */
-    private static boolean matches(Feature f, Object note, String kind) {
+    private static boolean matches(XposedModule module, Feature f, Object note, String kind) {
         String modelType = modelType(f, note);
         String mt = modelType == null ? null : modelType.trim().toLowerCase(java.util.Locale.ROOT);
         if (mt != null && !mt.isEmpty()) {
@@ -183,6 +207,11 @@ final class FeedCardHooks {
             case "goods":
                 return nonNull(f, note, GOODS_V2, "goodsNoteV2");
             default:
+                // 投票卡没有字段兜底：modelType 字段迁移后 AD-10 会永久静默失效，
+                // 既不进 cached() 也不会 markNotFound，HookKit.hit 只在 removed>0
+                // 触发，诊断页看不到任何原因。这里按 (feature, 类型) 记一次说明，
+                // 让日志与诊断页都可见「无 modelType、无字段兜底」这条降级依据。
+                warnVoteNoFallbackOnce(module, f, note.getClass());
                 return false;
         }
     }

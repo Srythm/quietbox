@@ -11,6 +11,8 @@ import com.quietbox.app.Feature;
 import com.quietbox.app.HookState;
 import com.quietbox.app.ReportProtocol;
 
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -24,8 +26,26 @@ import java.util.Map;
  *
  * HookState / 崩溃环都是进程级静态状态：每个用例使用不同 Feature 或
  * 专属线程名/异常实例，避免测试之间互相污染。
+ *
+ * <p>崩溃环与 sCrashHandlerInstalled 单向闩锁由 {@code @Before}/{@code @After}
+ * 调用 {@link Report#resetForTest()} 复位，并复原默认 UEH：否则安装了崩溃处理器
+ * 的用例会让后续用例在同一 JVM 里拿不到包装链、或读到残留崩溃。
  */
 public class ReportTest {
+
+    private Thread.UncaughtExceptionHandler originalHandler;
+
+    @Before
+    public void setUp() {
+        originalHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Report.resetForTest();
+    }
+
+    @After
+    public void tearDown() {
+        Thread.setDefaultUncaughtExceptionHandler(originalHandler);
+        Report.resetForTest();
+    }
 
     @Test
     public void snapshotSendsEmptySkipForRegisteredFeatureWithoutSkip() {

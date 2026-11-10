@@ -8,6 +8,8 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Assume;
 import org.junit.Test;
 
+import com.quietbox.app.TestPaths;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStream;
@@ -169,17 +171,16 @@ public class AnchorFrameworkBlacklistTest {
         return object(parsed);
     }
 
+    /**
+     * 与 QB AnchorContractTest.mainSourceRoot() 一致：cwd 可能是 app/（默认）、
+     * project/、QuietBox/ 或 D:\modules，逐级向上尝试显式候选，避免单一相对路径
+     * 在非默认 cwd 下抛 AssertionError 把生成器契约变成假失败。
+     */
     private static File findRepoFile(String relative) {
-        File dir = new File(System.getProperty("user.dir", ".")).getAbsoluteFile();
-        while (dir != null) {
-            File candidate = new File(dir, relative);
-            if (candidate.isFile()) {
-                return candidate;
-            }
-            dir = dir.getParentFile();
-        }
-        throw new AssertionError("找不到 " + relative
-                + "（cwd=" + System.getProperty("user.dir") + "）");
+        return TestPaths.resolveFromCwd(
+                relative,
+                "project/" + relative,
+                "QuietBox/project/" + relative).toFile();
     }
 
     private static String read(File file) throws Exception {

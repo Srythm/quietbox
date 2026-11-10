@@ -118,27 +118,45 @@ final class SplashAdHooks {
      * 对 androidx 走的是另一层），所以改成 hook 占位 Fragment 自身的 onCreateView，
      * 直接返回一个空 View。类名是非混淆的语义名。
      */
-    private static void installPlaceholder(XposedModule module, ClassLoader cl, Feature f) {
-        Method m = HookKit.anchorMethod(cl, AnchorKeys.SPLASH_PLACEHOLDER_VIEW);
+    static void installPlaceholder(XposedModule module, ClassLoader cl, Feature f) {
+        // F106：接入 findAnchorMethod(critical=true) 的记账通道，锚点缺失时诊断页可见。
+        Method m = HookKit.findAnchorMethod(module, f, cl, AnchorKeys.SPLASH_PLACEHOLDER_VIEW, true);
         if (m == null) {
-            HookKit.warn(module, f.id + " skip: SplashAdPlaceHolderView#onCreateView not found");
             return;
         }
+        final Class<?> anchorClass = m.getDeclaringClass();
         HookKit.install(module, f, "splashPlaceholderView", m,
                 new XposedInterface.Hooker() {
                     @Override
                     public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                        try {
-                            Object inflater = chain.getArg(0);
-                            if (inflater instanceof LayoutInflater) {
-                                HookKit.hit(module, f, "placeholder suppressed");
-                                return new View(((LayoutInflater) inflater).getContext());
-                            }
-                        } catch (Throwable t) {
-                            HookKit.error(module, f.id + " intercept error placeholder", t);
-                        }
-                        return chain.proceed();
+                        return interceptPlaceholder(chain, module, f, anchorClass);
                     }
                 });
+    }
+
+    /**
+     * 冷启动占位拦截（F106）：只有锚点类自身声明的 onCreateView 才返回空 View；
+     * 继承/同名方法族（其它 Fragment 的 onCreateView）一律放行原逻辑，避免把
+     * 整个冷启动占位误吞成空白页。
+     *
+     * <p>包级可见以便纯 JVM 单测直接驱动判定，不必构造真实 View/LayoutInflater。
+     */
+    static Object interceptPlaceholder(XposedInterface.Chain chain, XposedModule module,
+                                       Feature f, Class<?> anchorClass) throws Throwable {
+        java.lang.reflect.Executable executable = chain.getExecutable();
+        if (executable == null || anchorClass == null
+                || !anchorClass.equals(executable.getDeclaringClass())) {
+            return chain.proceed();
+        }
+        try {
+            Object inflater = chain.getArg(0);
+            if (inflater instanceof LayoutInflater) {
+                HookKit.hit(module, f, "placeholder suppressed");
+                return new View(((LayoutInflater) inflater).getContext());
+            }
+        } catch (Throwable t) {
+            HookKit.error(module, f.id + " intercept error placeholder", t);
+        }
+        return chain.proceed();
     }
 }
