@@ -23,6 +23,10 @@ public class ReleaseIdempotencyTest {
 
     private static final String SCRIPT_RELATIVE = "tools/release.sh";
 
+    /** 源码仓 / 官方仓两处 tag 冲突判定共用同一条件文本。 */
+    private static final String TAG_COMMIT_CONFLICT =
+            "if [ \"$tag_commit\" != \"$head_commit\" ]; then";
+
     private static String script() throws Exception {
         return readText(findRepoFile(SCRIPT_RELATIVE));
     }
@@ -33,8 +37,12 @@ public class ReleaseIdempotencyTest {
         assertTrue("源码 tag 已存在时必须比较 tag 提交与 HEAD",
                 block.contains("git rev-list -n1") && block.contains("git rev-parse HEAD"));
         assertTrue("tag 指向其它提交时必须硬失败（避免覆盖既有发布）",
-                block.contains("if [ \"$tag_commit\" != \"$head_commit\" ]; then")
+                block.contains(TAG_COMMIT_CONFLICT)
                         && block.contains("已存在且指向"));
+        assertTrue("tag 指向其它提交时冲突分支必须调 die；log 的文案同样含「已存在且指向」，"
+                        + "只查条件文本分不清 die 与 log（换成 log 就不再硬失败）",
+                conflictBranchBody(block, TAG_COMMIT_CONFLICT)
+                        .contains("die \"源码 tag v${VERSION} 已存在且指向"));
         assertTrue("tag 指向 HEAD 时必须跳过创建并继续后续发布步骤",
                 block.contains("tag_exists=1")
                         && block.contains("if [ \"$tag_exists\" -eq 0 ]; then"));
@@ -63,12 +71,53 @@ public class ReleaseIdempotencyTest {
                         && block.contains("rev-list -n1")
                         && block.contains("rev-parse HEAD"));
         assertTrue("官方仓 tag 指向其它提交时必须硬失败",
-                block.contains("if [ \"$tag_commit\" != \"$head_commit\" ]; then"));
+                block.contains(TAG_COMMIT_CONFLICT));
+        assertTrue("官方仓 tag 冲突分支必须调 die；只查条件文本时，"
+                        + "两处 die 换成含同样文案的 log 后断言依旧绿，重跑会覆盖既有发布",
+                conflictBranchBody(block, TAG_COMMIT_CONFLICT)
+                        .contains("die \"官方仓 tag ${official_tag} 已存在且指向"));
         assertTrue("官方仓已存在的 tag 必须跳过创建而不是 die",
                 block.contains("已存在且指向当前提交，跳过创建"));
         assertTrue("官方仓已存在的 Release 必须覆盖上传资产",
                 block.contains("gh release upload \"$official_tag\"")
                         && block.contains("--clobber"));
+    }
+
+    /**
+     * 取冲突条件行之后、该分支体到闭合 {@code fi} 之间的文本。
+     *
+     * <p>只断言整块的 contains 会漏掉「die 换成 log」：log 行的文案与 die 相同，
+     * 条件文本不变，断言依旧绿。必须按分支体验证失败动作真的调了 die。
+     * 嵌套 {@code if ...; then} 的 fi 不提前终止收集（深度计数）。
+     */
+    private static String conflictBranchBody(String block, String condition) {
+        String[] lines = block.split("\n", -1);
+        int at = -1;
+        for (int i = 0; i < lines.length; i++) {
+            if (lines[i].contains(condition)) {
+                at = i;
+                break;
+            }
+        }
+        if (at < 0) {
+            fail("release.sh 缺少冲突判定条件：" + condition);
+        }
+        StringBuilder body = new StringBuilder();
+        int depth = 0;
+        for (int i = at + 1; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (depth == 0 && line.equals("fi")) {
+                return body.toString();
+            }
+            if (line.startsWith("if ")) {
+                depth++;
+            } else if (line.equals("fi")) {
+                depth--;
+            }
+            body.append(lines[i]).append('\n');
+        }
+        fail("release.sh 的冲突分支没有闭合：" + condition);
+        return body.toString();
     }
 
     /** 从 `name() {` 到行首 `}`，避免断言跨到相邻函数。 */

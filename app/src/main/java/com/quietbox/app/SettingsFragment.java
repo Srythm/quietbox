@@ -242,7 +242,7 @@ public class SettingsFragment extends PreferenceFragmentCompat {
             return;
         }
         mResetInFlight = true;
-        reset.setEnabled(false);
+        reset.setEnabled(resetEntryEnabled(mResetInFlight));
         // 返回值只表示是否排入后台队列；真实结果（含 remote 不可用）统一走回调。
         mStore.resetToDefaults(this::onResetResult);
     }
@@ -255,17 +255,31 @@ public class SettingsFragment extends PreferenceFragmentCompat {
         return store != null;
     }
 
+    /**
+     * 「恢复默认」入口的可用态：只有后台事务在途期间才禁用。
+     * 包级可见：由 SettingsFragmentLogicTest 固定 —— view 已销毁时结果回调会提前返回，
+     * 但入口可用态不能跟着早退：Preference 挂在 PreferenceManager 的 screen 上、
+     * 不随 view 销毁而重建，且 MainActivity 用 add+hide/show 保留 fragment 实例，
+     * 入口不会因重建而恢复，漏掉这一步会让「恢复默认」永久置灰。
+     */
+    static boolean resetEntryEnabled(boolean resetInFlight) {
+        return !resetInFlight;
+    }
+
     /** ConfigStore 已在主线程回调；再 post 一次兼容后台线程回调，保证只改 UI 线程。 */
     private void onResetResult(boolean success) {
         MAIN.post(() -> {
             // 先清除在途状态：view 已销毁时也要允许下次重建后再次操作。
             mResetInFlight = false;
-            if (!isAdded() || getView() == null) {
-                return;
-            }
+            // 恢复入口可用必须早于下面「view 已销毁」的提前返回：Preference 挂在
+            // PreferenceManager 的 screen 上，不随 view 销毁而重建；MainActivity 又用
+            // add+hide/show 保留 fragment 实例，入口不会因重建而恢复，只在这里统一恢复。
             Preference reset = findPreference(PREF_RESET);
             if (reset != null) {
-                reset.setEnabled(true);
+                reset.setEnabled(resetEntryEnabled(mResetInFlight));
+            }
+            if (!isAdded() || getView() == null) {
+                return;
             }
             Toast.makeText(requireContext(),
                     success ? R.string.reset_done : R.string.reset_failed,

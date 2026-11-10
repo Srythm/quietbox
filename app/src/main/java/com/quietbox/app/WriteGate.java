@@ -13,15 +13,19 @@ final class WriteGate {
 
     private final io.github.yigenhuobah.core.WriteGate<Boolean> mDelegate =
             new io.github.yigenhuobah.core.WriteGate<>();
-    /** 有在途写入的 key：refresh 不能拿回读值覆盖用户刚做的乐观选择。 */
-    private final java.util.Set<String> mPending = new java.util.HashSet<>();
+    /** 有在途写入的 key → 最近一次 begin 的序号：refresh 不能拿回读值覆盖用户刚做的乐观选择。 */
+    private final java.util.Map<String, Long> mPending = new java.util.HashMap<>();
 
     /** 记录一次新写入并返回其序号（单调递增，不依赖系统时钟）。 */
     long begin(String key) {
         synchronized (mPending) {
-            mPending.add(key);
+            // 序号生成与在途登记必须在同一把锁内：否则两个并发 begin 可能让
+            // mDelegate 记下较新序号、mPending 却留下较旧序号，onResult 再也清不掉。
+            long seq = mDelegate.begin(key);
+            // 同一 key 的新写入取代旧序号：旧序号即使永不回结果，也不会永久残留在途标记。
+            mPending.put(key, seq);
+            return seq;
         }
-        return mDelegate.begin(key);
     }
 
     /**
@@ -35,7 +39,7 @@ final class WriteGate {
     /** 该 key 是否有尚未返回结果的写入；有则 refresh 不得回写开关状态。 */
     boolean isPending(String key) {
         synchronized (mPending) {
-            return mPending.contains(key);
+            return mPending.containsKey(key);
         }
     }
 
@@ -47,12 +51,23 @@ final class WriteGate {
      */
     boolean onResult(String key, long seq, boolean committed, boolean requested) {
         boolean latest = mDelegate.onResult(key, seq, committed, requested);
-        if (latest) {
-            synchronized (mPending) {
-                mPending.remove(key);
-            }
-        }
+        release(key, seq);
         return latest;
+    }
+
+    /**
+     * 放弃一次写入的在途标记：用于「不会有回调返回」的路径（如 remote 不可用时
+     * {@link ConfigStore#put} 直接返回 false，见 ConfigStore.java:100-104），否则
+     * {@link #isPending} 会永远为 true，refresh 不再回灌真实值、开关看起来被冻结。
+     *
+     * <p>只有序号与当前在途记录一致时才移除：旧序号（已被更新写入取代）不能替
+     * 仍在途的新写入清标记。序号不认识或已释放时是 no-op，重复调用安全。
+     *
+     * @param key  配置键
+     * @param seq  {@link #begin} 返回给调用方的序号
+     */
+    void cancel(String key, long seq) {
+        release(key, seq);
     }
 
     /**
@@ -71,5 +86,15 @@ final class WriteGate {
             mPending.clear();
         }
         mDelegate.clear();
+    }
+
+    /** 序号一致才移出在途标记；重复结果/旧序号不会误清仍在途的新写入。 */
+    private void release(String key, long seq) {
+        synchronized (mPending) {
+            Long pending = mPending.get(key);
+            if (pending != null && pending.longValue() == seq) {
+                mPending.remove(key);
+            }
+        }
     }
 }

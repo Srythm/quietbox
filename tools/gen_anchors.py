@@ -19,8 +19,10 @@ classes 段保持 key -> FQCN。
 锚点来源：tools/check-mounts.sh 的 64 项挂载点清单 + hooks/*.java 里的
 类/方法常量。check-mounts.sh 只读生成的 anchors.json，不再维护第二份表。
 
-DexSQL 缓存固定在 <repo>/tools/.dexsql-cache/；APK 路径/大小/sha256 任一变化都会
-自动重建。所有锚点命中后才写 --out，缺失时打印 MISSING 并以非 0 退出，原文件不变。
+DexSQL 缓存固定在 <repo>/tools/.dexsql-cache/，且只能用 --cache-dir 指定到仓库根
+以内的路径；APK 路径/大小/sha256 任一变化都会自动重建，重建只删 cache.dxc2 与
+apk.meta 两个本工具生成的文件，不动目录内其他内容。所有锚点命中后才写 --out，
+缺失时打印 MISSING 并以非 0 退出，原文件不变。
 """
 import argparse
 import hashlib
@@ -399,6 +401,22 @@ CLASSES = {
 TARGET_PACKAGE = "com.xingin.xhs"
 SCHEMA_VERSION = 1
 CACHE_DIR = REPO_ROOT / "tools" / ".dexsql-cache"
+CACHE_FILES = ("cache.dxc2", "apk.meta")
+
+
+def resolve_cache_dir(path):
+    """把 --cache-dir 解析为绝对路径，并且只允许落在仓库根以内。
+
+    缓存重建按文件名删除，但传错目录（typo、CI 里指向工作目录、相对路径解析到
+    别处）仍然意味着把 dexsql 的缓存产物写到仓库外；在这里前置拒绝，让错误在
+    参数校验期暴露，而不是等到 prepare-cache 之后。
+    """
+    resolved = Path(path).expanduser().resolve()
+    root = REPO_ROOT.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise SystemExit(
+            "ERROR: --cache-dir 必须位于仓库根 %s 内（收到 %s）" % (root, resolved))
+    return resolved
 
 
 # ---- 工具定位 -------------------------------------------------------------
@@ -537,6 +555,23 @@ def _meta_matches(meta_path, apk, size, sha):
             and values.get("sha256") == sha)
 
 
+def _purge_cache_files(cache_dir):
+    """只删本工具生成的 cache.dxc2 / apk.meta，目录本身与其他内容一律不动。
+
+    历史实现直接 `shutil.rmtree(cache_dir)`：缓存失效时会把整个目录递归删除，
+    而 --cache-dir 是命令行任意传入的，传错一次就误删。改为按文件名删除，并打印
+    即将删除的绝对路径（删除失败立即报错，不留给 prepare-cache 才暴露）。
+    """
+    for name in CACHE_FILES:
+        path = cache_dir / name
+        if path.is_file():
+            print("removing stale cache file: %s" % path)
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise SystemExit("ERROR: cannot remove %s: %s" % (path, exc))
+
+
 def ensure_cache(dexsql, apk, cache_dir=CACHE_DIR):
     cache_dir = Path(cache_dir)
     cache_file = cache_dir / "cache.dxc2"
@@ -546,7 +581,7 @@ def ensure_cache(dexsql, apk, cache_dir=CACHE_DIR):
     sha = _sha256(apk)
     if cache_file.is_file() and _meta_matches(meta_path, apk, size, sha):
         return cache_file
-    shutil.rmtree(cache_dir, ignore_errors=True)
+    _purge_cache_files(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [str(dexsql), "prepare-cache", "--input", str(apk),
@@ -684,7 +719,7 @@ def main():
     parser.add_argument("--version-code", default=os.environ.get("VERSION_CODE"),
                         help="APK 读取失败时显式指定 versionCode")
     parser.add_argument("--cache-dir", default=str(CACHE_DIR),
-                        help="DexSQL 缓存目录（默认 tools/.dexsql-cache）")
+                        help="DexSQL 缓存目录（默认 tools/.dexsql-cache；必须位于仓库根以内）")
     args = parser.parse_args()
 
     apk = Path(args.apk).expanduser()
@@ -718,7 +753,8 @@ def main():
     print("appVersion: %s (versionCode %d)" % (app_version, version_code_value))
     print("dexsql: %s" % dexsql_path)
 
-    cache_file = ensure_cache(dexsql_path, apk, args.cache_dir)
+    cache_dir = resolve_cache_dir(args.cache_dir)
+    cache_file = ensure_cache(dexsql_path, apk, cache_dir)
     print("cache: %s" % cache_file)
 
     anchors = {}

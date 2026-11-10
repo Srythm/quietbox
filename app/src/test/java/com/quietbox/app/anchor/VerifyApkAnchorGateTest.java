@@ -105,12 +105,18 @@ public class VerifyApkAnchorGateTest {
                 gate.contains("[ ! -f \"$TMP_DIR/anchors.json\" ]"));
         assertTrue("表缺失时必须 bad（锚点表漏打包，运行时会 fail-open）",
                 gate.contains("bad \"APK 内缺少 anchors.json"));
-        assertTrue("门禁必须比对 appVersion", gate.contains("appVersion"));
-        assertTrue("门禁必须比对 versionCode", gate.contains("versionCode"));
         assertTrue("门禁缺少 python 时的降级 bad 分支",
                 gate.contains("[ -z \"$PYTHON_BIN\" ]"));
-        assertTrue("门禁至少需要 3 条 bad：表缺失 / appVersion 错配 / versionCode 错配",
-                count(gate, "bad ") >= 3);
+        // 错配必须硬失败（bad），而不是只打印 ok：ok 消息里同样含
+        // "anchors.json appVersion=…" 字样，contains("appVersion") 无法区分
+        // 「比对」与「只打印」——门禁丢失时单测必须拦住。
+        assertTrue("门禁必须在 appVersion 错配时 bad",
+                gate.contains("bad \"anchors.json appVersion 期望适配版本"));
+        assertTrue("门禁必须在 versionCode 错配时 bad",
+                gate.contains("bad \"anchors.json versionCode 期望适配版本"));
+        assertTrue("门禁至少需要 5 条 bad：表缺失 / 无 python / 读不到 SUPPORTED_VERSION"
+                        + " / appVersion 错配 / versionCode 错配",
+                count(gate, "bad ") >= 5);
     }
 
     @Test

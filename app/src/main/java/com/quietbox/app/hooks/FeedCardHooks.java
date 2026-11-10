@@ -49,15 +49,15 @@ final class FeedCardHooks {
 
     /**
      * 三个卡过滤功能共用同一组挂载点。Hooks 只对本版本启用的功能调用进来，
-     * 因此这里逐个判断 enabled，只装启用项的谓词；挂载本身一次性完成。
+     * 因此这里逐个判断 enabled，只装启用项的谓词。
+     *
+     * 不设进程级一次性守卫：QuietBoxModule 在安装异常后会回滚 sInstalled 重试，
+     * 本类若永久记住「已安装」会让重试轮次三个卡过滤全部静默缺失。同轮内
+     * Hooks.installAll 对三个 Feature 各调一次，重复挂载由 libxposed 按相同
+     * hook id 原子替换（XposedInterface: 「same id ... replace the old one
+     * atomically」），不会产生重复拦截。
      */
-    private static volatile boolean sInstalled;
-
     static void install(XposedModule module, ClassLoader cl, Config config) {
-        if (sInstalled) {
-            return;
-        }
-        sInstalled = true;
         if (config.enabled(Feature.FEED_LIVE_CARD_BLOCK)) {
             installOne(module, cl, Feature.FEED_LIVE_CARD_BLOCK, "live");
         }
@@ -70,22 +70,32 @@ final class FeedCardHooks {
     }
 
     private static void installOne(XposedModule module, ClassLoader cl, Feature f, String kind) {
+        // 三个挂载点各自独立记账：单个锚点 install 抛异常/返回 false 不得连带
+        // 判死其余两个，否则重试轮次会整段静默缺失。
         try {
             HookKit.install(module, f, "feedCardAppendFilter",
                     HookKit.findAnchorMethod(module, f, cl,
                             AnchorKeys.FEED_CARD_APPEND_FILTER, true),
                     dropHook(module, f, "feedCardAppendFilter", 0, kind));
+        } catch (Throwable t) {
+            HookKit.error(module, f.id + " feedCardAppendFilter install aborted", t);
+        }
+        try {
             HookKit.install(module, f, "feedCardRefreshFilter",
                     HookKit.findAnchorMethod(module, f, cl,
                             AnchorKeys.FEED_CARD_REFRESH_FILTER, true),
                     dropHook(module, f, "feedCardRefreshFilter", 0, kind));
+        } catch (Throwable t) {
+            HookKit.error(module, f.id + " feedCardRefreshFilter install aborted", t);
+        }
+        try {
             // 9.51.0 起 Pd 的列表参数从 0 移到 1（参数 0 变成 isRefresh），见 FeedAdHooks。
             HookKit.install(module, f, "feedCardPagerFilter",
                     HookKit.findAnchorMethod(module, f, cl,
                             AnchorKeys.FEED_CARD_PAGER_FILTER, true),
                     dropHook(module, f, "feedCardPagerFilter", 1, kind));
         } catch (Throwable t) {
-            HookKit.error(module, f.id + " install aborted", t);
+            HookKit.error(module, f.id + " feedCardPagerFilter install aborted", t);
         }
     }
 

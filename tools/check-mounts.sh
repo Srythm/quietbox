@@ -4,6 +4,7 @@
 #
 # 用法：
 #   tools/check-mounts.sh [APK路径] [--apk APK] [--anchors PATH] [--dexsql PATH] [--aapt2 PATH]
+#   tools/check-mounts.sh [APK路径] ... [--allow-version]   # 放行宿主版本与 9.53.0 不符
 #
 # 参数优先级：CLI > 环境变量 > 常见安装路径。
 # 环境变量：
@@ -19,7 +20,8 @@
 #   GONE = 类不存在了（R8 改了混淆名），需要按锚点 key 重新定位
 #   SIG  = 类还在但方法/参数/返回类型变了，需要看具体差异再决定
 #
-# 退出码：0 全部 OK；1 锚点表不完整或存在 GONE/SIG；2 参数/工具/APK 缺失。
+# 退出码：0 全部 OK；1 锚点表不完整或存在 GONE/SIG；2 参数/工具/APK 缺失、
+# 宿主 versionName 与目标版本 9.53.0 不符且未用 --allow-version 放行。
 
 set -u
 
@@ -31,6 +33,7 @@ TARGET_APK="${TARGET_APK:-${APK:-}}"
 ANCHORS="${ANCHORS:-$REPO_ROOT/app/src/main/resources/anchors.json}"
 DEXSQL="${DEXSQL:-}"
 AAPT2="${AAPT2:-}"
+ALLOW_VERSION="${CHECK_MOUNTS_ALLOW_VERSION:-}"
 POSITIONAL=""
 
 usage() {
@@ -43,6 +46,7 @@ Arguments:
   --anchors PATH     anchors.json 路径（默认 app/src/main/resources/anchors.json）
   --dexsql PATH      dexsql 可执行文件；也可用 DEXSQL
   --aapt2 PATH       aapt2 可执行文件；也可用 AAPT2（可选，仅显示 versionName）
+  --allow-version    宿主 versionName 与 9.53.0 不符时放行（默认硬失败，退出码 2）
   -h, --help         显示本帮助
 
 Resolution order: CLI > environment > common install paths.
@@ -77,6 +81,8 @@ while [ $# -gt 0 ]; do
             AAPT2="$2"; shift 2 ;;
         --aapt2=*)
             AAPT2="${1#*=}"; shift ;;
+        --allow-version)
+            ALLOW_VERSION=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
         -*)
@@ -219,8 +225,16 @@ if is_executable_file "$AAPT2"; then
         | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)"
     if [ -n "$VERSION_NAME" ]; then
         echo "versionName: $VERSION_NAME"
-        [ "$VERSION_NAME" = "9.53.0" ] \
-            || echo "WARN: expected 9.53.0, got $VERSION_NAME" >&2
+        if [ "$VERSION_NAME" != "9.53.0" ]; then
+            if [ "$ALLOW_VERSION" = "1" ]; then
+                echo "WARN: expected 9.53.0, got $VERSION_NAME（--allow-version 放行）" >&2
+            else
+                echo "ERROR: expected 9.53.0, got $VERSION_NAME" >&2
+                echo "  宿主 APK 与 anchors.json 目标版本 9.53.0 不一致，挂载点校验结论不可信。" >&2
+                echo "  Fix: 使用 9.53.0 的 APK，或加 --allow-version（CHECK_MOUNTS_ALLOW_VERSION=1）显式放行。" >&2
+                exit 2
+            fi
+        fi
     else
         echo "WARN: cannot read versionName from $TARGET_APK" >&2
     fi
@@ -254,7 +268,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -389,7 +402,14 @@ def ensure_cache():
     if reusable:
         return cache_file
 
-    shutil.rmtree(CACHE_DIR, ignore_errors=True)
+    for stale in (cache_file, meta_path):
+        if stale.is_file():
+            out("==> 删除过期缓存文件: %s" % stale)
+            try:
+                stale.unlink()
+            except OSError as exc:
+                out("FAIL: 无法删除 %s: %s" % (stale, exc))
+                raise SystemExit(1)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     out("==> 首次为该 apk 建 DexSQL 缓存（约 40 秒）...")
     result = subprocess.run(
