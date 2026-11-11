@@ -8,6 +8,8 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import com.quietbox.app.VersionGate;
+
 import org.junit.Test;
 
 import java.lang.reflect.Field;
@@ -325,15 +327,16 @@ public class AnchorTableTest {
     }
 
     /**
-     * anchors.json 必须能从测试 classpath 加载；同一 ClassLoader 复用同一份表。
-     * 注意：Android 单测里的 org.json 是 stub（returnDefaultValues），
-     * 不能在这里断言 appVersion/versionCode，元数据由 AnchorContractTest 的
-     * 纯 JVM JSON 解析器校验。
+     * anchors.json 必须能从测试 classpath 加载；同一 ClassLoader 复用同一份表，
+     * 且 load() 必须正确读出 appVersion/versionCode 元数据（测试 classpath 上的
+     * org.json 是真实实现，见 app/build.gradle 的 org.json:json 依赖）。
      */
     @Test
     public void loadReadsAnchorsResourceAndCacheReusesTable() {
         AnchorTable loaded = AnchorTable.load(loader());
         assertNotNull(loaded);
+        assertEquals(VersionGate.SUPPORTED_VERSION, loaded.getAppVersion());
+        assertEquals(VersionGate.SUPPORTED_VERSION_CODE, loaded.getVersionCode());
 
         AnchorTable.clearCacheForTest();
         AnchorTable cached = AnchorTable.get(loader());

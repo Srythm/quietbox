@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -73,9 +74,9 @@ public class AnchorContractTest {
         return keys;
     }
 
-    /** 与 tools/gen_anchors.py 的 java_constant_name 保持同一规则。 */
+    /** 与 tools/gen_anchors.py 的 java_constant_name 保持同一规则（locale 无关）。 */
     private static String constantName(String key) {
-        return key.replaceAll("[^0-9A-Za-z]+", "_").toUpperCase();
+        return key.replaceAll("[^0-9A-Za-z]+", "_").toUpperCase(Locale.ROOT);
     }
 
     /** AnchorKeys 的常量名 → 常量值（锚点 key）。 */
@@ -123,12 +124,27 @@ public class AnchorContractTest {
                 ((Number) json.get("versionCode")).longValue());
     }
 
-    /** 67 是 check-mounts.sh 的挂载点清单条目数；锚点表必须全覆盖。 */
+    /**
+     * 条目数必须与 tools/check-mounts.sh 的 CHECKLIST_SIZE 一致；
+     * 逐项覆盖由该脚本在 APK 存在时校验，这里不宣称无法保证的覆盖性。
+     */
     @Test
     public void anchorsCoverTheChecklist() throws Exception {
         Map<String, Object> anchors = object(loadAnchors().get("anchors"));
-        assertEquals("anchors.json 必须覆盖 check-mounts.sh 的 67 项挂载点",
-                67, anchors.size());
+        assertEquals("anchors 条目数必须与 check-mounts.sh 的 CHECKLIST_SIZE 一致",
+                checklistSize(), anchors.size());
+    }
+
+    /** 从 tools/check-mounts.sh 读取 CHECKLIST_SIZE，避免测试里再维护一份魔数。 */
+    private static int checklistSize() throws Exception {
+        Path script = TestPaths.resolveFromCwd(
+                "tools/check-mounts.sh",
+                "project/tools/check-mounts.sh",
+                "QuietBox/project/tools/check-mounts.sh");
+        Matcher matcher = Pattern.compile("(?m)^\\s*CHECKLIST_SIZE\\s*=\\s*(\\d+)\\s*$")
+                .matcher(read(script));
+        assertTrue("check-mounts.sh 缺少 CHECKLIST_SIZE", matcher.find());
+        return Integer.parseInt(matcher.group(1));
     }
 
     @Test
@@ -309,6 +325,21 @@ public class AnchorContractTest {
         for (Map.Entry<String, String> entry : anchorKeys().entrySet()) {
             assertEquals("常量名必须是 key 的大写下划线形式",
                     constantName(entry.getValue()), entry.getKey());
+        }
+    }
+
+    /** 生成规则 locale 无关：tr/az 默认 locale 下也不能把 ASCII 'i' 变成 'İ'(U+0130)。 */
+    @Test
+    public void constantNameIsLocaleIndependent() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(new Locale("tr", "TR"));
+            String key = "copy_link_clipboard_write";
+            assertEquals("COPY_LINK_CLIPBOARD_WRITE", constantName(key));
+            assertFalse("常量名不得出现土耳其语 dotted capital I (U+0130)",
+                    constantName(key).indexOf('\u0130') >= 0);
+        } finally {
+            Locale.setDefault(original);
         }
     }
 

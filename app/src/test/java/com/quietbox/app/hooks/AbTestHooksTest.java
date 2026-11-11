@@ -21,11 +21,15 @@ import io.github.libxposed.api.XposedModule;
 /**
  * AB 强开的类型兜底与状态回退规则（纯 JVM，不构造 Xposed 链）。
  *
- * 覆盖两处会静默失效/崩溃的路径：
+ * 覆盖三类规则：
  * - coerce 在运行期类型与声明类型不一致时若硬返回声明类型，调用方按自己的 Type
  *   checkcast 会在宿主进程抛 ClassCastException（#f/#b 的第 2 个 Type 参数不参与校验）；
  * - guessType 原先把所有非整数字面量当 BOOL，字符串/JSON 读点会被塞 Boolean；
  * - provider 拉取失败后不能用启动快照覆盖运行中改过的覆盖表。
+ *
+ * 注意最后一条只固定 {@code AbRuntime.mayUseStartupSnapshot(boolean)} 谓词本身；
+ * {@code refresh()} 内 {@code if (!mayUseStartupSnapshot(sProviderPulled)) return;}
+ * 的接线（AbTestHooks.java）未被本文件覆盖，改动那段守门不会让这些用例失败。
  */
 public class AbTestHooksTest {
 

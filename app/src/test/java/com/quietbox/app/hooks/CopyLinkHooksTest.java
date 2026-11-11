@@ -49,13 +49,23 @@ public class CopyLinkHooksTest {
                 CopyLinkHooks.sanitizeCopy("https://xhs.cn/x?apptime=1", null, false));
         assertEquals("http://m.xiaohongshu.com/x",
                 CopyLinkHooks.sanitizeCopy("http://m.xiaohongshu.com/x?sid=9", null, false));
-        // scheme / host 大小写、显式端口、userinfo 都不影响 host 判断。
+        // scheme / host 大小写、显式端口、userinfo 均不影响 host 判断；
+        // IPv6 方括号由 hostOf 剥离（XHS 无 IPv6 域名，借 copy label 走净化路径）。
         assertEquals("HTTPS://WWW.XIAOHONGSHU.COM/x",
                 CopyLinkHooks.sanitizeCopy(
                         "HTTPS://WWW.XIAOHONGSHU.COM/x?sid=9", null, false));
         assertEquals("https://www.xiaohongshu.com:8443/x",
                 CopyLinkHooks.sanitizeCopy(
                         "https://www.xiaohongshu.com:8443/x?sid=9", null, false));
+        assertEquals("https://user@www.xiaohongshu.com/x",
+                CopyLinkHooks.sanitizeCopy(
+                        "https://user@www.xiaohongshu.com/x?sid=9", null, false));
+        assertEquals("https://user:pw@www.xiaohongshu.com:8443/x",
+                CopyLinkHooks.sanitizeCopy(
+                        "https://user:pw@www.xiaohongshu.com:8443/x?sid=9", null, false));
+        assertEquals("https://[::1]:8443/x",
+                CopyLinkHooks.sanitizeCopy(
+                        "https://[::1]:8443/x?sid=9", LABEL, false));
     }
 
     @Test

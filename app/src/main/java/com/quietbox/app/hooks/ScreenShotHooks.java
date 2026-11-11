@@ -175,7 +175,10 @@ final class ScreenShotHooks {
             }
             return;
         }
-        if (!HookKit.install(module, f, key, m, mediaChangeHook(module, f, key))) {
+        // PV-01 的 hook id label 必须是语义稳定字面量：检测器类名每版都变，
+        // 只作为 BOUND 去重键与诊断自由文本，不能进入 hook id / reg 账本。
+        if (!HookKit.install(module, f, "screenshotDetector", m,
+                mediaChangeHook(module, f, key))) {
             // install 已记 ERROR 日志与 skip；释放占位保留重试机会，不写「已定位」。
             synchronized (BOUND) {
                 BOUND.remove(key);

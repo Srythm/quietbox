@@ -46,16 +46,29 @@ public class AppInfoTest {
         try (java.util.stream.Stream<Path> stream = Files.walk(mainJava())) {
             for (Path p : (Iterable<Path>) stream
                     .filter(x -> x.toString().endsWith(".java"))::iterator) {
-                String text = new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
+                // 注释里写 {"com.xingin.xhs"} 不算硬编码：只对遮罩注释后的代码计数。
+                String text = maskComments(
+                        new String(Files.readAllBytes(p), StandardCharsets.UTF_8));
                 Matcher m = literal.matcher(text);
                 while (m.find()) {
                     hits++;
-                    where.append(p.getFileName()).append(' ');
+                    where.append(p).append(':').append(lineNumber(text, m.start())).append(' ');
                 }
             }
         }
         assertEquals("com.xingin.xhs 只允许在 AppInfo 一处硬编码，实际出现于：" + where,
                 1, hits);
+    }
+
+    /** 1-based 行号；遮罩保留换行与长度，命中下标可直接映射回原文。 */
+    private static int lineNumber(String text, int index) {
+        int line = 1;
+        for (int i = 0; i < index; i++) {
+            if (text.charAt(i) == '\n') {
+                line++;
+            }
+        }
+        return line;
     }
 
     @Test

@@ -7,8 +7,8 @@ package com.quietbox.app;
  * id 是统一功能编号（AD/UI/PV/EN/EX + 两位序号），只用于文档、日志前缀、
  * 诊断页与 CHANGELOG；remote key、AB key、类名不随编号变化。
  *
- * blockedReason 非空表示本版本无可实现的挂载点：保留编号与条目、默认关闭、
- * 不注册 hook、不在设置页渲染。
+ * blockedReason 非空表示本版本不注册任何 hook：既包括「无可实现的挂载点」，
+ * 也包括「需求取消」（保留编号与条目、默认关闭、不在设置页渲染）。
  */
 public enum Feature {
 

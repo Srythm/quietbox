@@ -127,7 +127,6 @@ final class Report {
         if (sStarted) {
             return;
         }
-        sStarted = true;
         ScheduledExecutorService ex = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "QuietBox-Report");
             t.setDaemon(true);
@@ -139,6 +138,8 @@ final class Report {
             } catch (Throwable ignored) {
             }
         }, 2, 3, TimeUnit.SECONDS);
+        // 线程创建/调度成功后才置位：失败时保持 false，installAll 重入仍可重试。
+        sStarted = true;
     }
 
     /**
@@ -154,7 +155,6 @@ final class Report {
         if (sCrashHandlerInstalled) {
             return;
         }
-        sCrashHandlerInstalled = true;
         final Thread.UncaughtExceptionHandler previous =
                 Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
@@ -173,12 +173,19 @@ final class Report {
                 previous.uncaughtException(thread, throwable);
             }
         });
+        // 包装成功后才置位：setDefaultUncaughtExceptionHandler 抛错时仍可重试，
+        // 不会永久关掉崩溃诊断（与 QuietMapModule 同序）。
+        sCrashHandlerInstalled = true;
     }
 
     /**
-     * 记录一条崩溃：时间（epoch 毫秒）| 线程名 | 异常类名 | 栈前 2 帧，
+     * 记录一条崩溃：时间（epoch 毫秒）| 线程名 | 归属标签+异常类名+message | 栈前 2 帧，
      * 单条截断 ≤ {@link #MAX_CRASH_CHARS}。新的顶掉最旧的；记录本身抛出的任何
      * 异常都不得上抛（由调用方 UEH 的 try/catch 兜底），避免干扰原有处理链。
+     *
+     * <p>归属标签由栈帧（含 cause 链）是否命中本模块的类判定：{@code [module]} /
+     * {@code [host]}，避免把宿主自身崩溃归因给模块；message 取 cause 链首个非空文案，
+     * 不把 240 字上限全消耗在类名与帧上（F181）。
      */
     static void recordCrash(Thread thread, Throwable throwable) {
         StringBuilder sb = new StringBuilder();
@@ -187,7 +194,12 @@ final class Report {
         if (throwable == null) {
             sb.append('?');
         } else {
+            sb.append(isModuleRelated(throwable) ? "[module] " : "[host] ");
             sb.append(throwable.getClass().getName());
+            String message = firstMessage(throwable);
+            if (!message.isEmpty()) {
+                sb.append(": ").append(message);
+            }
             StackTraceElement[] frames = throwable.getStackTrace();
             for (int i = 0; i < 2 && i < frames.length; i++) {
                 sb.append('|').append(frames[i]);
@@ -200,6 +212,48 @@ final class Report {
                 CRASHES.remove(CRASHES.size() - 1);
             }
         }
+    }
+
+    /** 模块代码包前缀：栈帧落在这些包内即视为与模块相关（hook 与 core 胶水）。 */
+    private static final String[] MODULE_PACKAGE_PREFIXES = {
+            "com.quietbox.app.", "io.github.yigenhuobah.",
+    };
+
+    /** cause 链遍历深度上限：防御畸形 cause 环导致崩溃记录自身卡死。 */
+    private static final int MAX_CAUSE_DEPTH = 8;
+
+    /** 栈帧（含 cause 链）是否落在本模块的类里。 */
+    private static boolean isModuleRelated(Throwable throwable) {
+        int depth = 0;
+        for (Throwable cur = throwable; cur != null && depth < MAX_CAUSE_DEPTH;
+             cur = cur.getCause(), depth++) {
+            for (StackTraceElement frame : cur.getStackTrace()) {
+                String cls = frame.getClassName();
+                for (String prefix : MODULE_PACKAGE_PREFIXES) {
+                    if (cls.startsWith(prefix)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * cause 链上首个非空 message（截断到 80 字），没有则返回空串。
+     * '|' 与换行替换成空格：崩溃条目用 '|' 分段，message 不得破坏分段。
+     */
+    private static String firstMessage(Throwable throwable) {
+        int depth = 0;
+        for (Throwable cur = throwable; cur != null && depth < MAX_CAUSE_DEPTH;
+             cur = cur.getCause(), depth++) {
+            String message = cur.getMessage();
+            if (message != null && !message.isEmpty()) {
+                String oneLine = message.replace('|', ' ').replace('\n', ' ');
+                return oneLine.length() <= 80 ? oneLine : oneLine.substring(0, 80) + "…";
+            }
+        }
+        return "";
     }
 
     /** 第 i 新的崩溃文本；不足返回空串（空串覆盖清掉模块 App 里的旧会话残留）。 */
@@ -232,15 +286,21 @@ final class Report {
     /**
      * 节流判定 + 退避判定的读起点：必须在同一把锁内取快照，否则定时线程与
      * 崩溃线程可能都判定为「该发」并把同一内容回传两次。
+     * 包内可见：JVM 单测直接锁定「内容变化立即重试 / 未变化才等退避」的放行条件。
      */
-    private static boolean shouldFlush(Map<String, String> content, long now) {
+    static boolean shouldFlush(Map<String, String> content, long now) {
         synchronized (FLUSH_LOCK) {
             boolean changed = !content.equals(sLast);
+            if (changed) {
+                // 内容已变化：立即重试，不受失败退避限制（与 noteFailure 的注释一致）。
+                return true;
+            }
             // 内容没变也要按心跳重发，否则 meta.updated_at 会一直停在旧值，
             // 超过 TTL 后 StatusProvider 会把正常会话误判为过期。
-            if (!changed && now - sLastOk < HEARTBEAT_MS) {
+            if (now - sLastOk < HEARTBEAT_MS) {
                 return false;
             }
+            // 心跳仍受失败退避约束：退避到期前不发，到期后放行。
             return now >= sNextTry;
         }
     }

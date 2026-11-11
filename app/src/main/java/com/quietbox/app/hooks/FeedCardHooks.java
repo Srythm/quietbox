@@ -19,7 +19,8 @@ import io.github.libxposed.api.XposedModule;
 /**
  * AD-08/09/10 信息流直播卡、带货卡、投票卡过滤。
  *
- * 复用 AD-02 已验证的列表过滤链路（9.52.1 为 nfd.m0#S/#C0、ifd/s#Pd；
+ * 复用 AD-02 已验证的列表过滤链路（9.53.0 为 hgd.m0#S/#C0、bgd.s#Sd；
+ * 9.52.1 为 nfd.m0#S/#C0、ifd/s#Pd；
  * 9.52.0 为 ExploreView#S/#C0、vha/s#Pd；
  * 9.51.0 为 l8d/m0#Q、#A0、g8d/s#Yd，见 FeedAdHooks），
  * 只动列表内容、不动游标，分页不受影响。三个功能各挂各的谓词，互不依赖。
@@ -29,7 +30,7 @@ import io.github.libxposed.api.XposedModule;
  * modelType 到卡片类型的取值映射需真机日志确认（见 logModelType）。
  * 投票卡没有字段兜底。
  *
- * 注意：只挂首页信息流的 S/C0/Pd 路径（已验证调用面），不碰详情连播链路。
+ * 注意：只挂首页信息流的 S/C0/Sd 路径（已验证调用面），不碰详情连播链路。
  */
 final class FeedCardHooks {
 
@@ -92,7 +93,7 @@ final class FeedCardHooks {
             HookKit.error(module, f.id + " feedCardRefreshFilter install aborted", t);
         }
         try {
-            // 9.51.0 起 Pd 的列表参数从 0 移到 1（参数 0 变成 isRefresh），见 FeedAdHooks。
+            // 9.51.0 起 Sd 的列表参数从 0 移到 1（参数 0 变成 isRefresh），见 FeedAdHooks。
             HookKit.install(module, f, "feedCardPagerFilter",
                     HookKit.findAnchorMethod(module, f, cl,
                             AnchorKeys.FEED_CARD_PAGER_FILTER, true),
@@ -197,7 +198,7 @@ final class FeedCardHooks {
                     matched = false;
                     break;
             }
-            logModelType(mt);
+            logModelType(module, f, mt);
             return matched;
         }
         // modelType 缺失时才用字段兜底
@@ -217,13 +218,17 @@ final class FeedCardHooks {
     }
 
     /** 每个 modelType 取值只记一次（上限 64），供真机确认服务端实际取值。 */
-    private static void logModelType(String mt) {
+    private static void logModelType(XposedModule module, Feature f, String mt) {
         synchronized (MODEL_SEEN) {
             if (MODEL_SEEN.size() >= 64 || !MODEL_SEEN.add(mt)) {
                 return;
             }
         }
-        android.util.Log.i("QuietBox", "AD-08/09/10 modelType=" + mt);
+        // module 允许为 null（纯 JVM 单测反射调用 matches 时未注入 module）：
+        // 诊断日志出口不得成为判定路径的障碍。
+        if (module != null) {
+            HookKit.info(module, f.id + " AD-08/09/10 modelType=" + mt);
+        }
     }
 
     private static String modelType(Feature f, Object note) {

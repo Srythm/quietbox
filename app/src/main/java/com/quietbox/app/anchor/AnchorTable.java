@@ -87,6 +87,11 @@ public final class AnchorTable {
     private final ConcurrentHashMap<String, Field> fieldCache = new ConcurrentHashMap<>();
     /** 已写过的 WARN 文案：同一失败只记一次，避免信息流逐条判定时刷屏。 */
     private final Set<String> warned = ConcurrentHashMap.newKeySet();
+    /**
+     * 描述符解析结果缓存：缺失锚点按设计每次重试，但同一个 {@code s} 的
+     * Class.forName / Array.newInstance 结果不变，不必重复解析。
+     */
+    private final ConcurrentHashMap<String, Class<?>[]> typeCache = new ConcurrentHashMap<>();
 
     private AnchorTable(String appVersion, long versionCode, JSONObject root,
                         ClassLoader loader) {
@@ -305,14 +310,19 @@ public final class AnchorTable {
             return new Lookup<>(null, Failure.SIGNATURE_MISMATCH, t);
         }
         Class<?> current = classLookup.value;
+        // 子类出现同名但类型不符的字段时不立即判失效：记下首个不符原因，继续沿
+        // 父类查找；只有整条链都没有类型相符的同名声明才按 FIELD_TYPE_MISMATCH 收口。
+        String mismatchDetail = null;
         while (current != null) {
             try {
                 Field field = current.getDeclaredField(fieldName);
                 if (field.getType() != expected) {
-                    warn(owner, key, Failure.FIELD_TYPE_MISMATCH,
-                            type + " expected " + expected.getName()
-                                    + " actual " + field.getType().getName(), null);
-                    return new Lookup<>(null, Failure.FIELD_TYPE_MISMATCH, null);
+                    if (mismatchDetail == null) {
+                        mismatchDetail = type + " expected " + expected.getName()
+                                + " actual " + field.getType().getName();
+                    }
+                    current = current.getSuperclass();
+                    continue;
                 }
                 return new Lookup<>(field, null, null);
             } catch (NoSuchFieldException e) {
@@ -321,6 +331,10 @@ public final class AnchorTable {
                 warn(owner, key, Failure.ERROR, fieldName + ":" + type, t);
                 return new Lookup<>(null, Failure.ERROR, t);
             }
+        }
+        if (mismatchDetail != null) {
+            warn(owner, key, Failure.FIELD_TYPE_MISMATCH, mismatchDetail, null);
+            return new Lookup<>(null, Failure.FIELD_TYPE_MISMATCH, null);
         }
         warn(owner, key, Failure.FIELD_NOT_FOUND, fieldName + ":" + type, null);
         return new Lookup<>(null, Failure.FIELD_NOT_FOUND, null);
@@ -359,7 +373,7 @@ public final class AnchorTable {
         }
         Class<?>[] params;
         try {
-            params = parseParameterTypes(signature, loader);
+            params = parseParameterTypesCached(owner, signature, loader);
         } catch (Throwable t) {
             warn(owner, key, Failure.SIGNATURE_MISMATCH, signature, t);
             return new Lookup<>(null, Failure.SIGNATURE_MISMATCH, t);
@@ -376,20 +390,50 @@ public final class AnchorTable {
         }
         Class<?> returnType;
         try {
-            returnType = parseReturnType(signature, loader);
+            returnType = parseReturnTypeCached(owner, signature, loader);
         } catch (Throwable t) {
             warn(owner, key, Failure.SIGNATURE_MISMATCH, signature, t);
             return new Lookup<>(null, Failure.SIGNATURE_MISMATCH, t);
         }
         if (method.getReturnType() != returnType) {
             // 同名同参但返回类型已变：混淆方法语义已变，按锚点缺失跳过
-            // 而不是照常 hook（返回类型不缓存，下次仍会重试）。
+            // 而不是照常 hook（失败结果不缓存，下次仍会重试）。
             warn(owner, key, Failure.RETURN_TYPE_MISMATCH,
                     signature + " expected " + returnType.getName()
                             + " actual " + method.getReturnType().getName(), null);
             return new Lookup<>(null, Failure.RETURN_TYPE_MISMATCH, null);
         }
         return new Lookup<>(method, null, null);
+    }
+
+    /** 参数描述符解析：同一签名只解析一次（失败锚点每次重试时复用结果）。 */
+    private static Class<?>[] parseParameterTypesCached(AnchorTable owner, String signature,
+                                                        ClassLoader loader) {
+        if (owner == null) {
+            return parseParameterTypes(signature, loader);
+        }
+        String cacheKey = "params:" + signature;
+        Class<?>[] cached = owner.typeCache.get(cacheKey);
+        if (cached == null) {
+            cached = parseParameterTypes(signature, loader);
+            owner.typeCache.put(cacheKey, cached);
+        }
+        return cached;
+    }
+
+    /** 返回类型解析：语义同 {@link #parseReturnType}，按签名缓存解析结果。 */
+    private static Class<?> parseReturnTypeCached(AnchorTable owner, String signature,
+                                                  ClassLoader loader) {
+        if (owner == null) {
+            return parseReturnType(signature, loader);
+        }
+        String cacheKey = "return:" + signature;
+        Class<?>[] cached = owner.typeCache.get(cacheKey);
+        if (cached == null) {
+            cached = new Class<?>[]{parseReturnType(signature, loader)};
+            owner.typeCache.put(cacheKey, cached);
+        }
+        return cached[0];
     }
 
     /** 统一 WARN 文案（英文、可 grep）：锚点 key + 失败类别 + 细节 + 异常类型。 */
@@ -441,6 +485,14 @@ public final class AnchorTable {
         return installedVersion == null || installedVersion.equals(expectedVersion);
     }
 
+    /**
+     * 读取模块自带的 anchors.json，并把 {@code loader} 绑定为宿主类解析器。
+     *
+     * <p>资源固定从模块自身 ClassLoader 读取（表随模块 APK 走，宿主 ClassLoader
+     * 看不到它）；{@code loader} 只用于 {@link Class#forName} 解析宿主类，并作为
+     * {@link #get(ClassLoader)} 的缓存键。因此缓存键标识的是宿主类命名空间，
+     * 不是资源来源：多个等价宿主 ClassLoader 会各自持有一份表，属预期行为。
+     */
     public static AnchorTable load(ClassLoader loader) {
         try {
             InputStream stream = AnchorTable.class.getClassLoader()
@@ -475,6 +527,8 @@ public final class AnchorTable {
     /**
      * 进程内复用：hooks 安装阶段按目标 ClassLoader 取同一份表。
      * 资源缺失时返回 null（fail-open），调用方按锚点缺失处理。
+     * 并发首取用 putIfAbsent 收口：所有线程都拿到同一个胜出实例，不会出现
+     * 多份表各自持有 warned/methodCache 的孤儿实例。
      */
     public static AnchorTable get(ClassLoader loader) {
         AnchorTable cached = CACHE.get(loader);
@@ -482,10 +536,11 @@ public final class AnchorTable {
             return cached;
         }
         AnchorTable loaded = load(loader);
-        if (loaded != null) {
-            CACHE.put(loader, loaded);
+        if (loaded == null) {
+            return null;
         }
-        return loaded;
+        AnchorTable raced = CACHE.putIfAbsent(loader, loaded);
+        return raced != null ? raced : loaded;
     }
 
     /** 仅供 JVM 单测：清空 ClassLoader 缓存。 */

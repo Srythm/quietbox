@@ -26,7 +26,9 @@ import javax.xml.parsers.DocumentBuilderFactory;
  * - status / warning：设置页顶部状态卡与警告横幅，由 StatusProvider 动态填充；
  * - p1_9_strip_xsec_token：PV-03 的子选项，不是独立 Feature；
  * - reset_defaults：「恢复默认」操作入口，不是开关；
- * - footer：页脚说明。
+ * - footer：页脚说明；
+ * - page_* / footer_*：二级页入口与页脚卡片族的前缀豁免，有意不逐项登记；
+ *   whitelistDoesNotShadowFeatureKeys 保证这些前缀不会遮蔽任何 Feature key。
  * 以后新增非功能 key 必须同步这里，否则测试失败——这是故意的。
  *
  * EX-02（AB 测试面板）不再是设置页开关，也不再是二级页入口：它是底栏的
@@ -45,7 +47,11 @@ public class PrefsFeatureConsistencyTest {
 
     private static final Pattern NON_FEATURE_PREFIX = Pattern.compile("^(page|footer)_");
 
-    /** QuietBox 的功能 key 形如 p0_1_* / p1_13_* / p2_1_*。 */
+    /**
+     * p* 形态的功能 key（如 p0_1_* / p1_13_* / p2_1_*）由本测试拦截；
+     * en_3_* / en_4_* 等其它命名不匹配该正则，由
+     * everyNonBlockedFeatureHasPreference 与 nonFeatureKeysAreWhitelisted 双向兜底。
+     */
     private static final Pattern FEATURE_LIKE_KEY = Pattern.compile("^p\\d+_\\d+_.+");
 
     /** 由底栏 tab 承载、不在设置页渲染的 Feature。 */
@@ -126,6 +132,10 @@ public class PrefsFeatureConsistencyTest {
         Set<String> featureKeys = featureKeys();
         for (String key : EXACT_NON_FEATURE_KEYS) {
             assertFalse("白名单 key 与 Feature 冲突: " + key, featureKeys.contains(key));
+        }
+        for (String key : featureKeys) {
+            assertFalse("白名单前缀不得遮蔽 Feature key: " + key,
+                    NON_FEATURE_PREFIX.matcher(key).find());
         }
     }
 

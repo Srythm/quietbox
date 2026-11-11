@@ -163,8 +163,8 @@ public final class StatusProvider extends ContentProvider {
             } else {
                 // reg/skip/crit 以最新值覆盖（空串也覆盖）：目标进程重开后，本次没有
                 // skip 的功能会回传空串，必须清掉上一次会话遗留的旧 skip。
-                editor.putString(VALUE_PREFIX + key,
-                        ReportProtocol.mergeText(sp.getString(VALUE_PREFIX + key, null), value));
+                // mergeText(next) 恒返回 next（旧值不参与合并），无需先读旧值。
+                editor.putString(VALUE_PREFIX + key, value);
             }
             accepted++;
         }

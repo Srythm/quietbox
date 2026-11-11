@@ -82,13 +82,7 @@ final class NoteUnavailableHooks {
         return new XposedInterface.Hooker() {
             @Override
             public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                Object result;
-                try {
-                    result = chain.proceed();
-                } catch (Throwable t) {
-                    // 原方法自己失败，交给下游原有的错误处理。
-                    throw t;
-                }
+                Object result = chain.proceed();
                 try {
                     if (!sDiagnosed) {
                         sDiagnosed = true;
@@ -119,7 +113,11 @@ final class NoteUnavailableHooks {
                 } catch (IOException io) {
                     throw io;
                 } catch (Throwable t) {
-                    HookKit.error(module, f.id + " intercept error", t);
+                    try {
+                        HookKit.error(module, f.id + " intercept error", t);
+                    } catch (Throwable ignored) {
+                        // PASSTHROUGH 模式下 module.log 抛错会直接透给宿主，必须兜住。
+                    }
                     return result;
                 }
             }

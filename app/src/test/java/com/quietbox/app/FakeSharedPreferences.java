@@ -4,6 +4,7 @@ import android.content.SharedPreferences;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,6 +22,9 @@ final class FakeSharedPreferences implements SharedPreferences {
     private boolean mThrowOnRead;
     /** commit 成功但丢弃 remove：模拟「删除没真正落盘」。 */
     private boolean mDropRemovals;
+
+    /** remove 在 editor 操作表里的哨兵值；与真实 Editor「最后操作生效」语义对齐。 */
+    private static final Object REMOVED = new Object();
 
     FakeSharedPreferences() {
         this(new HashMap<>());
@@ -134,49 +138,49 @@ final class FakeSharedPreferences implements SharedPreferences {
 
     private final class FakeEditor implements Editor {
 
-        private final Map<String, Object> mPending = new HashMap<>();
-        private final Set<String> mRemoved = new HashSet<>();
+        /** 按调用顺序记录 put/remove：同一 key 的后一次操作覆盖前一次。 */
+        private final Map<String, Object> mOperations = new LinkedHashMap<>();
         private boolean mClear;
 
         @Override
         public Editor putString(String key, String value) {
-            mPending.put(key, value);
+            mOperations.put(key, value);
             return this;
         }
 
         @Override
         public Editor putStringSet(String key, Set<String> values) {
-            mPending.put(key, values == null ? null : new HashSet<>(values));
+            mOperations.put(key, values == null ? null : new HashSet<>(values));
             return this;
         }
 
         @Override
         public Editor putInt(String key, int value) {
-            mPending.put(key, value);
+            mOperations.put(key, value);
             return this;
         }
 
         @Override
         public Editor putLong(String key, long value) {
-            mPending.put(key, value);
+            mOperations.put(key, value);
             return this;
         }
 
         @Override
         public Editor putFloat(String key, float value) {
-            mPending.put(key, value);
+            mOperations.put(key, value);
             return this;
         }
 
         @Override
         public Editor putBoolean(String key, boolean value) {
-            mPending.put(key, value);
+            mOperations.put(key, value);
             return this;
         }
 
         @Override
         public Editor remove(String key) {
-            mRemoved.add(key);
+            mOperations.put(key, REMOVED);
             return this;
         }
 
@@ -211,12 +215,17 @@ final class FakeSharedPreferences implements SharedPreferences {
             if (mClear) {
                 mValues.clear();
             }
-            if (!mDropRemovals) {
-                for (String key : mRemoved) {
-                    mValues.remove(key);
+            // 按调用顺序回放：同一 editor 内 put 后 remove 必须清键，
+            // remove 后 put 必须留下新值（与真实 SharedPreferences 一致）。
+            for (Map.Entry<String, Object> operation : mOperations.entrySet()) {
+                if (operation.getValue() == REMOVED) {
+                    if (!mDropRemovals) {
+                        mValues.remove(operation.getKey());
+                    }
+                } else {
+                    mValues.put(operation.getKey(), operation.getValue());
                 }
             }
-            mValues.putAll(mPending);
         }
     }
 }

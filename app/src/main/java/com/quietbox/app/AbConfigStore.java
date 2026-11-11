@@ -10,9 +10,9 @@ import java.util.Map;
 /**
  * AB 面板的 App 侧存储。
  *
- * 覆盖表同时写两份：框架 remote prefs 供宿主启动时读，本地 prefs 供
+ * 覆盖表同时写两份：框架 remote prefs 供宿主启动时读，本地 ab_report 镜像供
  * {@link AbReportProvider} 在运行中返回给宿主（remote prefs 在宿主里是启动快照）。
- * 探测结果也写在本地 prefs。
+ * 探测结果也写在本地 ab_report。
  *
  * 写入语义与 {@link ConfigStore} 一致：remote 不可用直接拒绝；commit() 排到
  * {@link ConfigWrites} 的后台单线程并检查真实结果；本地副本只在 remote 成功后
@@ -23,7 +23,6 @@ final class AbConfigStore {
     private static final String TAG = "QuietBox";
 
     private final SharedPreferences mRemote;
-    private final SharedPreferences mLocal;
     private final SharedPreferences mReport;
 
     AbConfigStore(Context context) {
@@ -32,10 +31,9 @@ final class AbConfigStore {
                 context.getSharedPreferences(AbReportProvider.PREFS, Context.MODE_PRIVATE));
     }
 
-    /** 测试入口：直接注入三份存储，不经过 ServiceBridge。 */
+    /** 测试入口：直接注入三份存储，不经过 ServiceBridge。local 参数保留以兼容既有调用方。 */
     AbConfigStore(SharedPreferences remote, SharedPreferences local, SharedPreferences report) {
         mRemote = remote;
-        mLocal = local;
         mReport = report;
     }
 
@@ -72,7 +70,8 @@ final class AbConfigStore {
     }
 
     boolean panelEnabled() {
-        return mReport.getBoolean(AbReportProvider.KEY_PANEL_ENABLED, false);
+        return mReport.getBoolean(AbReportProvider.KEY_PANEL_ENABLED,
+                Feature.AB_TEST_PANEL.defaultEnabled);
     }
 
     /**
@@ -205,9 +204,17 @@ final class AbConfigStore {
         return mReport.getLong("t", 0L);
     }
 
+    /**
+     * 覆盖表只从 remote 读：Config.KEY_AB_OVERRIDES 是 EX-02 新键，本地 prefs 从未
+     * 写入过它，回退读恒为空；remote 不可用时返回空表，与 {@link #setForced} 的拒绝
+     * 语义一致。
+     */
     private String read(String key) {
+        if (mRemote == null) {
+            return "";
+        }
         try {
-            return (mRemote != null ? mRemote : mLocal).getString(key, "");
+            return mRemote.getString(key, "");
         } catch (Throwable t) {
             Log.w(TAG, "read ab config failed: " + key, t);
             return null;

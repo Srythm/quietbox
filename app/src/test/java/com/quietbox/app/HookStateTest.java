@@ -16,7 +16,9 @@ import java.util.concurrent.TimeUnit;
  * HookState 的纯 JVM 行为：命中计数、标签排序、skip 原因保留、并发累加。
  * 诊断页与 Report 回传的快照都从这里取值，语义变了会直接反映到用户界面。
  *
- * 每个用例使用不同的 Feature：HookState 是进程级静态状态，测试方法之间不能互相污染。
+ * 隔离契约：被测 Feature 可以复用，但每个用例必须先调
+ * {@link HookState#clearFailures(Feature)}；该调用只清失败/跳过状态，
+ * 不清 labels/installedCount/hits，因此用例不得对这些累计量做绝对断言。
  */
 public class HookStateTest {
 
@@ -126,7 +128,9 @@ public class HookStateTest {
     }
 
     /**
-     * 容量已满时的淘汰优先级：先丢最旧的非 critical 原因，critical 原因只有在
+     * 容量已满时的淘汰优先级：先丢最旧的非 critical 原因（首条也纳入候选）；
+     * 否则「首条非 critical + 其余全 critical」时会先丢 critical，导致
+     * failedKeys/criticalFailedKeys 与 skipReasons 漂移。critical 原因只有在
      * 没有可选项时才让位，不能因为兜底逻辑把 critical 全丢掉。
      */
     @Test
@@ -145,10 +149,13 @@ public class HookStateTest {
 
         List<String> reasons = HookState.skipReasons(f);
         assertEquals(32, reasons.size());
-        assertEquals("首条原因始终保留", "first-optional", reasons.get(0));
-        assertEquals("critical 原因不应被优先淘汰", "critical-1", reasons.get(1));
-        assertFalse("最旧的非 critical 原因应先被丢弃",
-                reasons.contains("optional-2"));
+        assertEquals("最旧的非 critical 原因（首条）必须先被淘汰",
+                "critical-1", reasons.get(0));
+        assertFalse("首条非 critical 原因已被淘汰",
+                reasons.contains("first-optional"));
+        assertTrue("首条 critical 原因必须保留",
+                reasons.contains("critical-1"));
+        assertEquals("较新的非 critical 原因仍保留", "optional-2", reasons.get(1));
         assertEquals("newest", reasons.get(31));
     }
 

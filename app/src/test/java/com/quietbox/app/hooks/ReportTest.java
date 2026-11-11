@@ -24,8 +24,9 @@ import java.util.Map;
  * hit 只在 >0 时出现；crash0/1/2（0 最新）始终存在，无崩溃为空串。
  * 回归「旧会话 skip 残留导致横幅永久误报」的问题。
  *
- * HookState / 崩溃环都是进程级静态状态：每个用例使用不同 Feature 或
- * 专属线程名/异常实例，避免测试之间互相污染。
+ * HookState / 崩溃环都是进程级静态状态：每个用例使用不同 Feature，或（AB_TEST_PANEL
+ * 与其它测试类共用时）在 {@code @Before}/{@code @After} 显式 clearFailures，
+ * 避免测试之间互相污染。
  *
  * <p>崩溃环与 sCrashHandlerInstalled 单向闩锁由 {@code @Before}/{@code @After}
  * 调用 {@link Report#resetForTest()} 复位，并复原默认 UEH：否则安装了崩溃处理器
@@ -39,10 +40,15 @@ public class ReportTest {
     public void setUp() {
         originalHandler = Thread.getDefaultUncaughtExceptionHandler();
         Report.resetForTest();
+        // F325：AB_TEST_PANEL 与 AbTestHooksTest/AbTestHooksDiagnosticsTest 共用进程级
+        // HookState，且清单里已没有完全独占的 Feature。用例前后显式清空该 Feature 的
+        // 失败标记，保证 skip/crit 断言不受跨类残留影响，也不把 critical 留给后续用例。
+        HookState.clearFailures(Feature.AB_TEST_PANEL);
     }
 
     @After
     public void tearDown() {
+        HookState.clearFailures(Feature.AB_TEST_PANEL);
         Thread.setDefaultUncaughtExceptionHandler(originalHandler);
         Report.resetForTest();
     }
@@ -165,8 +171,10 @@ public class ReportTest {
         assertTrue("crash0 必须回传", snap.containsKey(ReportProtocol.KEY_CRASH_0));
         assertTrue("crash1 必须回传", snap.containsKey(ReportProtocol.KEY_CRASH_1));
         assertTrue("crash2 必须回传", snap.containsKey(ReportProtocol.KEY_CRASH_2));
-        for (int i = 0; i < 3; i++) {
-            String key = "crash" + i;
+        // 复用同一批常量，避免手写 "crash"+i 与常量改名后静默漂移（F326）。
+        String[] crashKeys = {ReportProtocol.KEY_CRASH_0, ReportProtocol.KEY_CRASH_1,
+                ReportProtocol.KEY_CRASH_2};
+        for (String key : crashKeys) {
             String value = snap.get(key);
             assertNotNull(value);
             assertTrue("crash 值必须通过回传长度校验", ReportProtocol.isValidValue(value));
@@ -204,14 +212,33 @@ public class ReportTest {
         String crash0 = Report.snapshot().get(ReportProtocol.KEY_CRASH_0);
         String[] parts = crash0.split("\\|", -1);
 
-        assertEquals("时间|线程|异常类名|帧1|帧2 共 5 段", 5, parts.length);
+        assertEquals("时间|线程|归属+异常类名+message|帧1|帧2 共 5 段", 5, parts.length);
         long ts = Long.parseLong(parts[0]);
         assertTrue("首段必须是当前毫秒时间",
                 Math.abs(System.currentTimeMillis() - ts) < 60_000L);
         assertEquals("qb-crash-fmt", parts[1]);
-        assertEquals("java.lang.RuntimeException", parts[2]);
+        assertEquals("纯宿主栈必须标记 [host] 且带 message",
+                "[host] java.lang.RuntimeException: format", parts[2]);
         assertEquals("栈前 2 帧按 getStackTrace() 顺序拼接",
                 "com.a.B.d(B.java:1)|com.e.F.h(F.java:2)", parts[3] + "|" + parts[4]);
+    }
+
+    /** F181：栈帧命中模块包必须标记 [module]，message 取 cause 链首个非空文案。 */
+    @Test
+    public void crashEntryTagsModuleFramesAndCarriesCauseMessage() {
+        RuntimeException boom = new RuntimeException();
+        boom.initCause(new IllegalStateException("root|cause"));
+        boom.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement("com.quietbox.app.hooks.HookKit", "install",
+                        "HookKit.java", 10),
+                new StackTraceElement("com.xingin.Host", "run", "Host.java", 20)});
+        Report.recordCrash(new Thread("qb-crash-mod"), boom);
+
+        String crash0 = Report.snapshot().get(ReportProtocol.KEY_CRASH_0);
+        String[] parts = crash0.split("\\|", -1);
+
+        assertEquals("message 里的 | 不得破坏分段", 5, parts.length);
+        assertEquals("[module] java.lang.RuntimeException: root cause", parts[2]);
     }
 
     /** 单条截断 ≤240（MAX_VALUE=256 之内）：超长线程名只保留前 240 个字符。 */

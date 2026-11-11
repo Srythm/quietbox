@@ -40,14 +40,14 @@ public final class ServiceBridge {
 
     private static boolean sListenerRegistered;
 
-    /** service 真正绑定后要跑的一次性重绘；由 UI 层设置。 */
-    private static Runnable pendingRender = () -> { };
+    /** service 真正绑定后要跑的一次性重绘；由 UI 层设置。主线程写、框架回调线程读。 */
+    private static volatile Runnable pendingRender = () -> { };
 
     private ServiceBridge() {
     }
 
     /** UI 层在等 service 绑定时挂一个重绘回调。 */
-    public static void setOnBound(Runnable r) {
+    public static synchronized void setOnBound(Runnable r) {
         pendingRender = (r == null) ? () -> { } : r;
     }
 

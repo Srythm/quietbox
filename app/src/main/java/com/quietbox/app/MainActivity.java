@@ -62,8 +62,9 @@ public class MainActivity extends AppCompatActivity {
             Fragment settings = new SettingsFragment();
             Fragment diagnostics = new DiagnosticsFragment();
             Fragment about = new AboutFragment();
-            // commitNow：底栏恢复选中态之前，默认可见的 Fragment 必须已经就位，
-            // 否则 setSelectedItemId 触发的回调会重复 add。
+            // commitNow：四个 Fragment 必须在本方法返回前就位，后续 setSelectedItemId
+            // 与 mCurrentFragment 才能立即引用；此时监听器尚未挂上，setSelectedItemId
+            // 不会触发 switchTab。
             // 「测试」tab 按需创建：AbTestFragment.onCreatePreferences 会同步构造
             // ConfigStore/AbConfigStore（两次 getRemotePreferences binder），一次性 add
             // 会让从不打开测试页的用户也在主线程/每次 Activity 重建时白付这两次 binder。

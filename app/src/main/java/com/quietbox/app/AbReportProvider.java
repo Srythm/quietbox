@@ -47,7 +47,8 @@ public final class AbReportProvider extends ContentProvider {
         if ("overrides".equals(method)) {
             SharedPreferences sp = getContext().getSharedPreferences(PREFS, 0);
             Bundle out = new Bundle();
-            out.putBoolean(KEY_PANEL_ENABLED, sp.getBoolean(KEY_PANEL_ENABLED, false));
+            out.putBoolean(KEY_PANEL_ENABLED,
+                    sp.getBoolean(KEY_PANEL_ENABLED, Feature.AB_TEST_PANEL.defaultEnabled));
             out.putString(KEY_OVERRIDES, sp.getString(KEY_OVERRIDES, ""));
             return out;
         }

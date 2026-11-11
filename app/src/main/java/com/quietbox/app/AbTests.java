@@ -130,8 +130,11 @@ public final class AbTests {
                 return R.string.ab_group_detail;
             case AbTest.GROUP_PLAYBACK:
                 return R.string.ab_group_playback;
-            default:
+            case AbTest.GROUP_MISC:
                 return R.string.ab_group_misc;
+            default:
+                // 新增分组或数据填错时不得静默归为「其他推荐」：开发/测试期直接暴露。
+                throw new IllegalArgumentException("unknown AbTest group: " + group);
         }
     }
 }

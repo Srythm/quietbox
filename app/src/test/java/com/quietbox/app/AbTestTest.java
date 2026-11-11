@@ -7,6 +7,9 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * AbTest 的强开值规整契约（纯 JVM）。
  *
@@ -69,19 +72,17 @@ public class AbTestTest {
 
     @Test
     public void curatedTests_forceValueMatchesDeclaredType() {
+        Set<String> seen = new HashSet<>();
         for (AbTest test : AbTests.ALL) {
+            // F378：key 是 AbTests.byKey 的查找键、也是 AbTestFragment 的一行；
+            // 重复 key 会造成两行同名开关与歧义查找，这里必须拦住。
+            assertTrue("重复 key: " + test.key, seen.add(test.key));
             assertNotNull("精选实验缺少 forceValue: " + test.key, test.forceValue);
-            Object primitive = test.targetPrimitive();
+            // targetPrimitive 的返回类型由 valueType 决定（BOOL→Boolean/INT→Integer），
+            // 非 null 已隐含类型正确；原先的 instanceof 断言恒真，不提供额外保护。
             assertNotNull("forceValue 与 valueType 不一致，强开会静默失效: " + test.key
                     + " valueType=" + test.valueType
-                    + " forceValue=" + test.forceValue, primitive);
-            if (test.valueType == AbTest.ValueType.BOOL) {
-                assertTrue("BOOL 型的 forceValue 只能是 true/false: " + test.key,
-                        primitive instanceof Boolean);
-            } else {
-                assertTrue("INT 型的 forceValue 必须是整数: " + test.key,
-                        primitive instanceof Integer);
-            }
+                    + " forceValue=" + test.forceValue, test.targetPrimitive());
             assertNotNull("forcedLiteral 不能为空: " + test.key, test.forcedLiteral());
         }
     }

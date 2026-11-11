@@ -33,8 +33,8 @@ public final class Hooks {
     }
 
     /**
-     * Feature -> 安装器。只登记非 blocked Feature；blocked Feature 不在表内，
-     * installOne 会按原 switch 的行为打印 blocked 日志且不安装。
+     * Feature -> 安装器。只登记非 blocked Feature；blocked Feature 由 installAll
+     * 在调用 installOne 之前统一过滤（打印 blocked 日志且不安装）。
      *
      * 安装顺序仍由 installAll 遍历 Feature.values() 决定，与本表迭代顺序无关。
      */
@@ -155,11 +155,8 @@ public final class Hooks {
         try {
             Installer installer = INSTALLERS.get(f);
             if (installer == null) {
-                if (f.blocked()) {
-                    module.log(Log.INFO, TAG, f.id + " blocked: " + f.blockedReason);
-                } else {
-                    module.log(Log.INFO, TAG, f.id + " pending implementation in later phase");
-                }
+                // blocked Feature 已在 installAll 里 continue 掉，这里只剩未实现的 Feature。
+                module.log(Log.INFO, TAG, f.id + " pending implementation in later phase");
                 return;
             }
             installer.install(module, cl, config);

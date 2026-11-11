@@ -230,15 +230,15 @@ public class StatusProviderTest {
                         ""}));
 
         assertEquals("1000|main|java.lang.NullPointerException|at a.b.C.d(C.java:1)|at e.f.G.h(G.java:2)",
-                sp.getString("v:" + ReportProtocol.KEY_CRASH_0, null));
-        assertEquals("无崩溃槽位以空串落地", "", sp.getString("v:" + ReportProtocol.KEY_CRASH_1, null));
+                sp.getString(v(ReportProtocol.KEY_CRASH_0), null));
+        assertEquals("无崩溃槽位以空串落地", "", sp.getString(v(ReportProtocol.KEY_CRASH_1), null));
 
         // 下一次目标进程会话无崩溃：空串覆盖必须清掉上一会话的崩溃记录。
         assertNotNull(StatusProvider.applyReport(sp,
                 new String[]{ReportProtocol.KEY_CRASH_0},
                 new String[]{""}));
         assertEquals("空串必须清掉旧会话崩溃残留", "",
-                sp.getString("v:" + ReportProtocol.KEY_CRASH_0, null));
+                sp.getString(v(ReportProtocol.KEY_CRASH_0), null));
     }
 
     /** 写侧与读侧（reportString/reportHit）使用同一 "v:" 前缀契约。 */

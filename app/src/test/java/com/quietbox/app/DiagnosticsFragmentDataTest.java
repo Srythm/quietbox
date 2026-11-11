@@ -124,10 +124,20 @@ public class DiagnosticsFragmentDataTest {
                 "AD-01 开屏广告跳过: registered", "AD-02 信息流广告过滤: —");
 
         String copy = DiagnosticsFragment.joinReportText(header, features, "", "最近崩溃:");
+        String export = DiagnosticsFragment.joinExportText(header, features,
+                Collections.<String>emptyList(), "", "—",
+                "[功能状态]", "[最近命中]", "[最近崩溃]");
 
-        assertEquals("复制文本必须逐行含全部功能状态，且与分享共用同一份 featureLines",
+        assertEquals("复制文本必须逐行含全部功能状态",
                 header + "\nAD-01 开屏广告跳过: registered\nAD-02 信息流广告过滤: —\n", copy);
         assertFalse("无崩溃时不得出现崩溃段", copy.contains("最近崩溃"));
+        // 同一份 featureLines 交给复制与导出两条拼装路径，两侧功能行必须完全一致。
+        for (String line : features) {
+            assertTrue("复制文本缺少功能行: " + line, copy.contains(line));
+            assertTrue("导出文本缺少功能行: " + line, export.contains(line));
+        }
+        assertTrue("导出 [功能状态] 段必须逐行包含同一份 featureLines",
+                export.contains("[功能状态]\n" + DiagnosticsFragment.joinLines(features)));
     }
 
     @Test
@@ -143,5 +153,20 @@ public class DiagnosticsFragmentDataTest {
         assertTrue("复制文本必须以共用抬头开头", copy.startsWith(header + "\nAD-01"));
         assertTrue("有崩溃时必须追加崩溃段名与 crash 行",
                 copy.contains("最近崩溃:\ncrash0 1000|main|java.lang.RuntimeException\n"));
+    }
+
+    // ------------------------------------------------------------ 空态判定（F341）
+
+    @Test
+    public void emptyStateIsSuppressedWhenCrashesExist() {
+        assertTrue("无回传且无崩溃才展示空态",
+                DiagnosticsFragment.showEmptyState(false, new String[3]));
+        assertTrue("崩溃槽位全是空串时仍按无崩溃处理",
+                DiagnosticsFragment.showEmptyState(false, new String[]{"", "", ""}));
+        assertFalse("只有崩溃回传时不得再显示「暂无诊断数据」",
+                DiagnosticsFragment.showEmptyState(false,
+                        new String[]{"1000|main|java.lang.RuntimeException", "", ""}));
+        assertFalse("有功能回传时不展示空态",
+                DiagnosticsFragment.showEmptyState(true, new String[3]));
     }
 }

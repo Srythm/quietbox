@@ -21,10 +21,11 @@ import io.github.libxposed.api.XposedModule;
  * AD-04 广告外跳拦截。
  *
  * 链路（2026-10-16 DexSQL 复核，内部记录；
- * 9.52.1 汇聚点为 m8e/i0，方法签名不变；9.52.0 为 XYWebViewUtil，9.51.0 为 k1e/i0，
+ * 9.53.0 汇聚点为 j9e/i0（anchors.json ext_app_webview_converge）；
+ * 9.52.1 为 m8e/i0，方法签名不变；9.52.0 为 XYWebViewUtil，9.51.0 为 k1e/i0，
  * 9.50.0 为 p0e/i0）：
  *   广告落地页 WebView（ExternalWebViewActivityV2）触发三方 scheme
- *     → Llzd/l0.L → Lm8e/i0.b（唯一汇聚点）
+ *     → Llzd/l0.L → Lj9e/i0.b（唯一汇聚点）
  *         ├─ Path A：AdRedirectInfo.c()(showXhsOpenAppDialog)==true
  *         │    → IAdvertProxy.gotoExtApp → AdvertSpiImpl.gotoExtApp → startActivity
  *         └─ Path B：showXhsOpenAppDialog==false 或 AdRedirectInfo==null
@@ -35,7 +36,7 @@ import io.github.libxposed.api.XposedModule;
  * Lm8e/i0.b；9.52.0 为 Lcom/xingin/xywebview/util/XYWebViewUtil;.b，9.50.0 为
  * Lp0e/i0.b，9.51.0 为 Lk1e/i0.b）。
  * gotoExtApp 仍是广告专用 SPI 的动作方法，跳过原方法体即阻断 Path A。
- * Path B 走 XYUriUtils，gotoExtApp 拦不到，故补挂汇聚点 m8e/i0.b：
+ * Path B 走 XYUriUtils，gotoExtApp 拦不到，故补挂汇聚点 j9e/i0.b：
  *   仅在「ctx 是 ExternalWebViewActivityV2 且第 3 参 AdRedirectInfo 非空（广告落地页，
  *   普通外链 H5 宿主把它置 null，见 ExternalWebViewActivityV2.Qe()）且 scheme 非 http(s)」
  *   时返回 false（未处理），让广告落地页留在 WebView 内，不拉起外部 App；

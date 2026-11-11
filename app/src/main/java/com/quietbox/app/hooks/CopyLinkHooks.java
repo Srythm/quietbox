@@ -80,14 +80,21 @@ final class CopyLinkHooks {
             // 回调（只打日志、不写剪贴板），在那里改 ClipData 对剪贴板零效果，已弃用。
             Method write = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.COPY_LINK_CLIPBOARD_WRITE, true);
-            HookKit.install(module, f, "clipboardWrite",
-                    write, clipDataHook(module, f, stripXsecToken));
+            // findAnchorMethod 已在锚点缺失时记 critical；这里先判空，避免再交给
+            // HookKit.install 的 null 分支重复记一条 skip。
+            if (write != null) {
+                HookKit.install(module, f, "clipboardWrite",
+                        write, clipDataHook(module, f, stripXsecToken));
+            }
 
             // 副挂/兜底：所有"复制链接"的 String 收口。主挂是混淆类，被 R8 重命名时靠它兜底。
             Method a = HookKit.anchorMethod(cl, AnchorKeys.COPY_LINK_FUNNEL);
             HookKit.install(module, f, "copyLinkFunnel", a, funnelHook(module, f, stripXsecToken));
 
-            HookState.note(f, "剪贴板写入点（主挂）+ 复制链接 String 收口（兜底，label=" + COPY_LABEL + "）");
+            HookState.note(f, (write != null
+                    ? "剪贴板写入点（主挂）+ 复制链接 String 收口（兜底，label="
+                    : "剪贴板写入点缺失；仅复制链接 String 收口（兜底，label=")
+                    + COPY_LABEL + "）");
         } catch (Throwable t) {
             HookKit.error(module, f.id + " install aborted", t);
             HookState.note(f, "安装异常");
@@ -135,7 +142,7 @@ final class CopyLinkHooks {
         if (clean.equals(raw)) {
             return null;
         }
-        HookKit.hit(module, f, "ClipboardProxyImpl removed=" + removedKeys(raw, stripToken));
+        HookKit.hit(module, f, "clipboardWrite removed=" + removedKeys(raw, stripToken));
         ClipDescription src = clip.getDescription();
         // 保留原 MIME 列表与 htmlText：newPlainText 会把 MIME 固定为 text/plain 且不设
         // html，原条目的 text/html（富文本）粘贴到富文本目标会退化成纯文本。

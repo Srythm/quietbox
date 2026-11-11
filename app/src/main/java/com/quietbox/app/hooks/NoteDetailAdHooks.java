@@ -16,7 +16,7 @@ import io.github.libxposed.api.XposedModule;
  *
  * 笔记详情页底部的「二跳条」由 AdvertV2View（继承抽象类 p.a，即 FrameLayout）承载。
  * 构造时它会 lazy 出一个真实广告 view 并 addView；广告数据通过
- * a(Lb20/b;) / b(Lp50/v;) 绑定进来。
+ * 方法 a / b 绑定进来（混淆参数签名以 anchors.json 的 AnchorKeys 为准）。
  *
  * 为什么不 hook 工厂：create*NoteAdvertBannerView 的返回类型是抽象类 Lp/a;，
  * 没法 new 一个假实例；返回 null 又会被下游 addView/强转打崩。
@@ -33,7 +33,7 @@ final class NoteDetailAdHooks {
     static void install(XposedModule module, ClassLoader cl) {
         Feature f = Feature.NOTE_DETAIL_AD_BANNER;
         try {
-            // a(Lb20/b;) 绑图片广告模型；b(Lp50/v;) 绑视频广告模型。
+            // 方法 a 绑图片广告模型、方法 b 绑视频广告模型（签名以 anchors.json 为准）。
             Method image = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.NOTE_DETAIL_AD_IMAGE, true);
             Method video = HookKit.findAnchorMethod(module, f, cl,

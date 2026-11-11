@@ -25,10 +25,6 @@ public final class AbTest {
         BOOL,
         /** 读点返回 Integer（组号）。 */
         INT;
-
-        public static ValueType fromString(String raw) {
-            return "int".equals(raw) ? INT : BOOL;
-        }
     }
 
     public final String key;
@@ -49,11 +45,16 @@ public final class AbTest {
     }
 
     /**
-     * 给「其他」列表里用户手填的未收录 key 造一个运行时条目。
-     * titleRes/summaryRes 为 0 表示没有文案，UI 侧直接显示 key。
+     * 由宿主 guessType 为覆盖表中未收录的 key 构造运行时条目。
+     * titleRes/summaryRes 为 0 表示没有文案，UI 侧用 {@link #hasCopy()} 判断后跳过文案段。
      */
     public static AbTest forKey(String key, String forceValue, ValueType type) {
         return new AbTest(key, GROUP_MISC, 0, 0, forceValue, type);
+    }
+
+    /** false = 没有资源文案（运行时条目），UI 不得调用 getString(titleRes/summaryRes)。 */
+    public boolean hasCopy() {
+        return titleRes != 0 && summaryRes != 0;
     }
 
     /** 该读点强开的目标原语值：BOOL → Boolean，INT → Integer。解析不出来返回 null。 */

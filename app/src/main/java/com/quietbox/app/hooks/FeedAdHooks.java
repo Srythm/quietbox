@@ -17,26 +17,28 @@ import io.github.libxposed.api.XposedModule;
 /**
  * AD-02 信息流广告过滤。
  *
- * 9.52.1 的信息流广告有两种来源（2026-11-05 DexSQL 复核；9.52.1 为 nfd.m0/ifd.s，
- * 9.52.0 为 ExploreView/vha.s，9.51.0 为 l8d.m0/g8d.s，9.50.0 为 r7d.m0/m7d.s）：
+ * 9.53.0 的信息流广告有两种来源（2026-11-05 DexSQL 复核；9.53.0 为 hgd.m0/bgd.s，
+ * 9.52.1 为 nfd.m0/ifd.s，9.52.0 为 ExploreView/vha.s，9.51.0 为 l8d.m0/g8d.s，
+ * 9.50.0 为 r7d.m0/m7d.s）：
  *
  * 1) 开屏关联的首页第 2 位广告（2-pos）：客户端自己插，链路是
  *    AdsHomeFeedManagerServiceImpl.handleFeedDataIfNeed → recordAdsNoteData
- *    → … → nfd.m0.g0 插入。这一种旧 hook（只跳 handleFeedDataIfNeed）能覆盖。
+ *    → … → hgd.m0.g0 插入。这一种旧 hook（只跳 handleFeedDataIfNeed）能覆盖。
  *
  * 2) **普通信息流广告**：服务端直接下发 NoteItemBean.isAd=true，客户端没有"插入广告"
  *    的方法可拦，只能在列表层过滤。旧 hook 对这类完全无效。
  *
  * 本类两层都做：
- * - 2-pos：跳 handleFeedDataIfNeed + recordAdsNoteData，并守卫 nfd.m0.g0。
- * - 普通广告：在 nfd.m0.S / nfd.m0.C0 / ifd.s.Pd 调用原方法前，从入参
+ * - 2-pos：跳 handleFeedDataIfNeed + recordAdsNoteData，并守卫 hgd.m0.g0。
+ * - 普通广告：在 hgd.m0.S / hgd.m0.C0 / bgd.s.Sd 调用原方法前，从入参
  *   ArrayList 移除 isAd==true 的项。只动列表内容，不动游标，分页不受影响。
  *
- * 9.51.0 → 9.52.0/9.52.1 方法名映射（同一方法体、同一签名形状，DexSQL 反汇编比对）：
- *   l8d/m0#Q  → nfd.m0#S   （日志 "appendResponseNoteWithCache"；9.52.0 为 ExploreView#S）
- *   l8d/m0#A0 → nfd.m0#C0  （日志 "showRefreshNoteList"；9.52.0 为 ExploreView#C0）
- *   l8d/m0#e0 → nfd.m0#g0  （插入动画，调用 getRecyclerView；9.52.0 为 ExploreView#g0）
- *   g8d/s#Yd  → ifd/s#Pd   （Z, ArrayList, 回调 三参不变；9.52.0 为 vha/s#Pd）
+ * 9.53.0 → 9.52.1 方法名映射（同一方法体、同一签名形状，DexSQL 反汇编比对；
+ * 当前 anchors.json 即 9.53.0：hgd.m0#S/#C0/#g0、bgd.s#Sd）：
+ *   hgd/m0#S  → nfd.m0#S   （日志 "appendResponseNoteWithCache"；9.52.0 为 ExploreView#S）
+ *   hgd/m0#C0 → nfd.m0#C0  （日志 "showRefreshNoteList"；9.52.0 为 ExploreView#C0）
+ *   hgd/m0#g0 → nfd.m0#g0  （插入动画，调用 getRecyclerView；9.52.0 为 ExploreView#g0）
+ *   bgd/s#Sd  → ifd/s#Pd   （Z, ArrayList, 回调 三参不变；9.52.0 为 vha/s#Pd）
  *
  * isAd 是 NoteItemBean 的**字段**（不是 getter）：Lcom/xingin/entities/NoteItemBean;->isAd:Z。
  */
@@ -56,7 +58,7 @@ final class FeedAdHooks {
         try {
             installTwoPosition(module, cl, f);
             installListFilter(module, cl, f);
-            HookState.note(f, "2-pos（handleFeedDataIfNeed/recordAdsNoteData/hgd.m0.g0）+ 普通广告列表过滤（hgd.m0.S/C0、bgd.s.Pd）");
+            HookState.note(f, "2-pos（handleFeedDataIfNeed/recordAdsNoteData/hgd.m0.g0）+ 普通广告列表过滤（hgd.m0.S/C0、bgd.s.Sd）");
         } catch (Throwable t) {
             HookKit.error(module, f.id + " install aborted", t);
             HookState.note(f, "安装异常");
@@ -102,7 +104,7 @@ final class FeedAdHooks {
         HookKit.install(module, f, "feedAdRefreshFilter",
                 HookKit.findAnchorMethod(module, f, cl, AnchorKeys.FEED_AD_REFRESH_FILTER, true),
                 dropAdsHook(module, f, "feedAdRefreshFilter", 0));
-        // Pd(boolean isRefresh, ArrayList pageData, 回调)：9.51.0 起列表从参数 0 移到参数 1
+        // Sd(boolean isRefresh, ArrayList pageData, 回调)：9.51.0 起列表从参数 0 移到参数 1
         // （参数 0 变成 isRefresh 布尔），列表经回调 onSuccess 交给 nfd.m0.C0。
         HookKit.install(module, f, "feedAdPagerFilter",
                 HookKit.findAnchorMethod(module, f, cl, AnchorKeys.FEED_AD_PAGER_FILTER, true),
@@ -135,7 +137,9 @@ final class FeedAdHooks {
 
     private static void seenOnce(XposedModule module, Feature f, String where, int size) {
         synchronized (SEEN) {
-            if (!SEEN.add(where)) {
+            // 与 FeedCardHooks.seenOnce 同一口径：feature + 挂载点，避免同名入口
+            // 在不同 Feature 间互相吞掉诊断日志。
+            if (!SEEN.add(f.id + " " + where)) {
                 return;
             }
         }

@@ -46,7 +46,13 @@ public final class AbOverrides {
         }
     }
 
-    /** serialize(parse(x)) 保序且可再次被 parse 读回；行间用 '\n'，不加尾换行。 */
+    /**
+     * 按 {@code key=value} 每行一条序列化，行间用 '\n'，不加尾换行。
+     *
+     * <p>不做转义：key 不得含 '='，key/value 都不得含换行或回车——否则 parse
+     * 会截断 key 或把 value 拆成多行并丢弃后续行。写入方的输入必须满足该约束，
+     * 因此只有「输入合法时」serialize(parse(x)) 才保序且可再次被 parse 读回。
+     */
     public static String serialize(Map<String, String> map) {
         StringBuilder sb = new StringBuilder();
         if (map == null) {

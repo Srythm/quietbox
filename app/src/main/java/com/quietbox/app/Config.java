@@ -45,7 +45,13 @@ public final class Config {
         }
     }
 
-    /** 纯 JVM 可测入口：overrides 里缺的键用 Feature 编译期默认值，未知键忽略。 */
+    /**
+     * 纯 JVM 可测入口：overrides 里缺的键用 Feature 编译期默认值，未知键忽略。
+     *
+     * <p>F340：仅供单测固定「map 覆盖」这一窄语义，<strong>不代表生产读取路径</strong>：
+     * 生产唯一入口是 {@link #load(XposedModule)} → {@link #loadTolerant}，它逐键容错，
+     * 并额外读取 strip 子开关 / AB 覆盖表 / 配置版本。新增键时两边需分别同步。
+     */
     static Config fromOverrides(Map<String, Boolean> overrides) {
         Config config = new Config();
         if (overrides != null) {
@@ -71,6 +77,11 @@ public final class Config {
     /**
      * 纯 JVM 可测入口：remote=false 或读取失败时全默认；读取成功时缺键用默认值。
      * 任何异常都不向外抛，避免一次 remote 读取失败让全部 hook 不安装。
+     *
+     * <p>F340：仅供单测固定「整体读取失败 → 全默认」这一窄语义，
+     * <strong>不是生产路径</strong>（生产见 {@link #loadTolerant}：逐键容错，并读取
+     * strip 子开关 / AB 覆盖表 / 配置版本）。它整份失败即回退全默认，与生产口径不同，
+     * 不要把它当作 load 行为的参考实现。
      */
     static Config load(boolean remote, RemoteReader reader) {
         if (!remote) {

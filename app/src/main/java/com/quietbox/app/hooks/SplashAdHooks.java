@@ -85,10 +85,18 @@ final class SplashAdHooks {
     private static void installEmbedded(XposedModule module, ClassLoader cl, Feature f) {
         for (String key : VOID_KEYS) {
             Method m = HookKit.findAnchorMethod(module, f, cl, key, true);
+            if (m == null) {
+                // 锚点缺失已由 findAnchorMethod 记账；再交给 install 会追加一条
+                // 「挂载点为空」普通 skip，同一缺失被计成两条。
+                continue;
+            }
             HookKit.install(module, f, key, m, HookKit.skipVoid(module, f, key));
         }
         for (String key : DECISION_KEYS) {
             Method m = HookKit.findAnchorMethod(module, f, cl, key, true);
+            if (m == null) {
+                continue;
+            }
             HookKit.install(module, f, key, m, HookKit.constBool(module, f, key, false));
         }
     }
@@ -97,7 +105,10 @@ final class SplashAdHooks {
     private static void installFullScreen(XposedModule module, ClassLoader cl, Feature f) {
         // ui.a#d 是 Path B 唯一出口，签名中的 SplashAd 由 anchors.json 精确描述。
         Method d = HookKit.findAnchorMethod(module, f, cl, AnchorKeys.SPLASH_FULLSCREEN_ENTRY, true);
-        HookKit.install(module, f, "splashFullscreenEntry", d, HookKit.skipVoid(module, f, "splashFullscreenEntry"));
+        if (d != null) {
+            HookKit.install(module, f, "splashFullscreenEntry", d,
+                    HookKit.skipVoid(module, f, "splashFullscreenEntry"));
+        }
 
         for (int i = 0; i < FULLSCREEN_KEYS.length; i++) {
             Method a = HookKit.findAnchorMethod(module, f, cl, FULLSCREEN_KEYS[i], false);

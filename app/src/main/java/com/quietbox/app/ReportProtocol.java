@@ -103,7 +103,8 @@ public final class ReportProtocol {
      * 才能清掉上一次会话落盘的旧 skip；缺失不发送会让失败横幅永久误报。
      */
     public static String mergeText(String prev, String next) {
-        return ReportProtocolCore.mergeText(prev, next);
+        // 走 core 的单参重载：prev 从不参与合并，避免继续转发已弃用 API。
+        return ReportProtocolCore.mergeText(next);
     }
 
     /**

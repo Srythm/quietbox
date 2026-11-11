@@ -146,6 +146,9 @@ public class FeedAdHooksTest {
      */
     @Test
     public void dropAds_missingIsAdField_recordsSkipReason() throws Exception {
+        // HookState 是进程级静态状态：先清掉该 Feature 的失败标记，
+        // 让下面的存在性判断只反映本次执行，而不是其它用例的残留。
+        HookState.clearFailures(Feature.FEED_AD_FILTER);
         List<LogRecord> logs = new ArrayList<>();
         XposedModule module = newModule(logs);
 

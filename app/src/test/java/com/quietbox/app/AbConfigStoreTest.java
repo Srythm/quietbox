@@ -171,4 +171,92 @@ public class AbConfigStoreTest {
         assertFalse(store.setPanelEnabled(true));
         assertFalse(report.contains(AbReportProvider.KEY_PANEL_ENABLED));
     }
+
+    @Test
+    public void runtimeAbTestEntriesHaveNoResourceCopy() {
+        // F335：forKey 造出的运行时条目 titleRes/summaryRes 为 0，UI 必须先判 hasCopy()，
+        // 否则 getString(0) 抛 Resources.NotFoundException。
+        assertFalse("运行时条目没有资源文案",
+                AbTest.forKey("andr_unknown", "1", AbTest.ValueType.INT).hasCopy());
+        for (AbTest curated : AbTests.ALL) {
+            assertTrue("精选条目必须带文案: " + curated.key, curated.hasCopy());
+        }
+    }
+
+    @Test
+    public void overridesDoNotFallBackToLocalPrefs() {
+        // ab_overrides 只存在于 remote；本地 prefs 从未写入过该键，回退读会误报旧值。
+        FakeSharedPreferences local = new FakeSharedPreferences();
+        local.edit().putString(Config.KEY_AB_OVERRIDES, "stale=1").commit();
+        AbConfigStore store = new AbConfigStore(null, local, new FakeSharedPreferences());
+
+        assertTrue("remote 不可用时覆盖表必须为空，不能读本地残留",
+                store.overrides().isEmpty());
+    }
+
+    @Test
+    public void panelEnabledDefaultsToFeatureDefault() {
+        AbConfigStore store = new AbConfigStore(new FakeSharedPreferences(),
+                new FakeSharedPreferences(), new FakeSharedPreferences());
+        assertEquals("面板开关默认值必须来自 Feature 枚举，不能在读取点硬编码",
+                Feature.AB_TEST_PANEL.defaultEnabled, store.panelEnabled());
+    }
+
+    @Test
+    public void panelCommitThrowReportsFailureAndDoesNotMirror() throws Exception {
+        FakeSharedPreferences remote = new FakeSharedPreferences();
+        remote.setThrowOnCommit(true);
+        FakeSharedPreferences report = new FakeSharedPreferences();
+        AbConfigStore store = new AbConfigStore(remote, new FakeSharedPreferences(), report);
+        AtomicBoolean result = new AtomicBoolean(true);
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertTrue(store.setPanelEnabled(true, committed -> {
+            result.set(committed);
+            done.countDown();
+        }));
+        assertTrue("commit 抛异常也必须回调，否则 UI 乐观值永不回滚",
+                done.await(5, TimeUnit.SECONDS));
+        assertFalse("commit 抛异常必须回调失败", result.get());
+        assertFalse("remote 写失败时不能更新本地副本",
+                report.contains(AbReportProvider.KEY_PANEL_ENABLED));
+    }
+
+    @Test
+    public void forcedCommitThrowReportsFailureAndDoesNotMirror() throws Exception {
+        FakeSharedPreferences remote = remoteWith("a=1");
+        remote.setThrowOnCommit(true);
+        FakeSharedPreferences report = new FakeSharedPreferences();
+        AbConfigStore store = new AbConfigStore(remote, new FakeSharedPreferences(), report);
+        AtomicBoolean result = new AtomicBoolean(true);
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertTrue(store.setForced("b", true, "2", committed -> {
+            result.set(committed);
+            done.countDown();
+        }));
+        assertTrue("commit 抛异常也必须回调", done.await(5, TimeUnit.SECONDS));
+        assertFalse("commit 抛异常必须回调失败", result.get());
+        assertFalse(report.contains(AbReportProvider.KEY_OVERRIDES));
+    }
+
+    @Test
+    public void mirrorCommitFailureKeepsRemoteSuccess() throws Exception {
+        FakeSharedPreferences remote = new FakeSharedPreferences();
+        FakeSharedPreferences report = new FakeSharedPreferences();
+        report.setCommitResult(false);
+        AbConfigStore store = new AbConfigStore(remote, new FakeSharedPreferences(), report);
+        AtomicBoolean result = new AtomicBoolean();
+        CountDownLatch done = new CountDownLatch(1);
+
+        assertTrue(store.setPanelEnabled(true, committed -> {
+            result.set(committed);
+            done.countDown();
+        }));
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertTrue("remote 已成功时，本地镜像失败不能把结果改成失败", result.get());
+        assertTrue(remote.getBoolean(Feature.AB_TEST_PANEL.key, false));
+        assertFalse("镜像 commit 失败时不得留下半写状态",
+                report.contains(AbReportProvider.KEY_PANEL_ENABLED));
+    }
 }

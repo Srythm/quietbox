@@ -87,10 +87,20 @@ final class WatermarkHooks {
             HookKit.warn(module, f.id + " skip: watermark model getter anchor " + t);
         }
 
+        markMissing(f, installed, mainInstalled);
+    }
+
+    /**
+     * 主链失效的记账（F376）：两个主锚点（watermark_compose / watermark_save_entry）
+     * 都标 critical，若它们都没挂上而只有语义 getter 生效，reg 非空、critical=0
+     * 会让 EN-01 的失败横幅不亮，与 :60 注释「关键锚点缺失记 critical」相悖。
+     * 纯状态判定，包内可见便于 JVM 单测。
+     */
+    static void markMissing(Feature f, int installed, int mainInstalled) {
         if (installed == 0) {
-            HookState.markNotFound(f, "水印挂载点未找到");
+            HookState.markNotFoundCritical(f, "水印挂载点未找到");
         } else if (mainInstalled == 0) {
-            HookState.markNotFound(f, "水印主链挂载点未找到（仅语义 getter 生效）");
+            HookState.markNotFoundCritical(f, "水印主链挂载点未找到（仅语义 getter 生效）");
         }
     }
 

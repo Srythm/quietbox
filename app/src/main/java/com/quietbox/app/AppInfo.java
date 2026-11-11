@@ -64,7 +64,9 @@ final class AppInfo {
             PackageInfo info = context.getPackageManager()
                     .getPackageInfo(TARGET_PACKAGE, 0);
             String version = info.versionName != null ? info.versionName : UNKNOWN;
-            return version + " (" + info.versionCode + ")";
+            // 与 versionCode() 同口径：versionCode 字段自 API 28 起废弃，完整值走
+            // getLongVersionCode()，避免两处输出截断/0 值时口径漂移。
+            return version + " (" + info.getLongVersionCode() + ")";
         } catch (Throwable t) {
             return null;
         }

@@ -448,7 +448,11 @@ public class AbTestFragment extends PreferenceFragmentCompat {
         } else {
             state = getString(R.string.ab_not_read);
         }
-        item.setSummary(test.key + " · " + state + "\n" + getString(test.summaryRes));
+        String summary = test.key + " · " + state;
+        if (test.hasCopy()) {
+            summary += "\n" + getString(test.summaryRes);
+        }
+        item.setSummary(summary);
     }
 
     /** 重置分页并加载第一批；后续由滚动监听 / 「加载更多」增量追加。 */
@@ -709,17 +713,21 @@ public class AbTestFragment extends PreferenceFragmentCompat {
     }
 
     /**
-     * CSV 转义。除逗号/引号/换行外，还要防公式注入：Excel/WPS 会把以
+     * CSV 转义。除逗号/引号外，还要防公式注入：Excel/WPS 会把以
      * {@code = + - @}（以及制表符/回车）开头的单元格当公式执行，而探测值来自
      * 宿主 AB 下发，可能被恶意内容注入。这类值前加单引号强制按文本处理。
+     * 换行统一替换为空格：避免单元格内换行让导出条数统计（countRows）偏大。
      */
     static String esc(String value) {
         if (value == null) {
             return "";
         }
-        String safe = neutralizeFormula(value);
-        boolean quote = safe.indexOf(',') >= 0 || safe.indexOf('"') >= 0
-                || safe.indexOf('\n') >= 0 || safe.indexOf('\r') >= 0;
+        // 先做公式注入判定（'\r' 开头仍要加引号），再把换行压成空格。
+        String safe = neutralizeFormula(value)
+                .replace("\r\n", " ")
+                .replace('\r', ' ')
+                .replace('\n', ' ');
+        boolean quote = safe.indexOf(',') >= 0 || safe.indexOf('"') >= 0;
         String escaped = safe.replace("\"", "\"\"");
         return quote ? "\"" + escaped + "\"" : escaped;
     }

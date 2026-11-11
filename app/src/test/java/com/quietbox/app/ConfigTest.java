@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -25,13 +26,16 @@ public class ConfigTest {
     /** remote=false：即使 reader 能读到全关，也必须走编译期默认值。 */
     @Test
     public void remoteDisabledUsesDefaults() {
+        final int[] reads = {0};
         Config c = Config.load(false, () -> {
+            reads[0]++;
             Map<String, Boolean> allOff = new HashMap<>();
             for (Feature f : Feature.values()) {
                 allOff.put(f.key, false);
             }
             return allOff;
         });
+        assertEquals("remote=false 时不得调用 reader", 0, reads[0]);
         for (Feature f : Feature.values()) {
             assertEquals("remote=false 时 " + f.key + " 应走编译期默认值",
                     f.defaultEnabled, c.enabled(f));
@@ -41,7 +45,12 @@ public class ConfigTest {
     /** reader 返回空 Map：缺键全部用编译期默认值。 */
     @Test
     public void emptyReaderMapUsesDefaults() {
-        Config c = Config.load(true, () -> Collections.emptyMap());
+        final int[] reads = {0};
+        Config c = Config.load(true, () -> {
+            reads[0]++;
+            return Collections.emptyMap();
+        });
+        assertEquals("成功路径必须真正调用 reader 一次", 1, reads[0]);
         for (Feature f : Feature.values()) {
             assertEquals("空 Map 时 " + f.key + " 应走编译期默认值",
                     f.defaultEnabled, c.enabled(f));
@@ -71,9 +80,12 @@ public class ConfigTest {
     /** reader 抛异常：全默认且不向外抛。 */
     @Test
     public void readerThrowsFallsBackToDefaults() {
+        final int[] reads = {0};
         Config c = Config.load(true, () -> {
+            reads[0]++;
             throw new IllegalStateException("remote prefs boom");
         });
+        assertEquals("异常路径也必须真正调用 reader 一次", 1, reads[0]);
         for (Feature f : Feature.values()) {
             assertEquals("reader 抛异常时 " + f.key + " 应走编译期默认值",
                     f.defaultEnabled, c.enabled(f));
@@ -83,7 +95,12 @@ public class ConfigTest {
     /** reader 返回 null（对应 getRemotePreferences 返回 null）：全默认。 */
     @Test
     public void nullReaderMapUsesDefaults() {
-        Config c = Config.load(true, () -> null);
+        final int[] reads = {0};
+        Config c = Config.load(true, () -> {
+            reads[0]++;
+            return null;
+        });
+        assertEquals("null 路径也必须真正调用 reader 一次", 1, reads[0]);
         for (Feature f : Feature.values()) {
             assertEquals("reader 返回 null 时 " + f.key + " 应走编译期默认值",
                     f.defaultEnabled, c.enabled(f));
@@ -213,18 +230,35 @@ public class ConfigTest {
 
     /** abOverrides() 返回不可变副本：外部改写不得污染内部状态（F-056）。 */
     @Test
-    public void abOverridesIsAnImmutableCopy() {
+    public void abOverridesIsAnImmutableCopy() throws Exception {
         Config c = Config.loadTolerant(new FakeSource()
                 .putString(Config.KEY_AB_OVERRIDES, "ab_key=1\nother=2"),
                 (message, t) -> {
                 });
 
+        Map<String, String> snapshot = c.abOverrides();
         assertThrows("abOverrides() 必须是不可变副本，不允许外部 put",
                 UnsupportedOperationException.class,
-                () -> c.abOverrides().put("injected", "bad"));
-        assertEquals("外部改写尝试后内部覆盖表内容不变", "1", c.abOverrides().get("ab_key"));
-        assertEquals("外部改写后内部覆盖表仍有另一条", "2", c.abOverrides().get("other"));
-        assertFalse("外部注入的键不得出现", c.abOverrides().containsKey("injected"));
+                () -> snapshot.put("injected", "bad"));
+        assertThrows("abOverrides() 必须是不可变副本，不允许 clear",
+                UnsupportedOperationException.class, snapshot::clear);
+        assertThrows("abOverrides() 必须是不可变副本，不允许 remove",
+                UnsupportedOperationException.class, () -> snapshot.remove("ab_key"));
+        assertThrows("abOverrides() 必须是不可变副本，不允许 putAll",
+                UnsupportedOperationException.class,
+                () -> snapshot.putAll(Collections.singletonMap("injected", "bad")));
+        assertEquals("外部改写尝试后内部覆盖表内容不变", "1", snapshot.get("ab_key"));
+        assertEquals("外部改写后内部覆盖表仍有另一条", "2", snapshot.get("other"));
+        assertFalse("外部注入的键不得出现", snapshot.containsKey("injected"));
+
+        // 快照语义：副本取回后内部表再变化，不得回写到已取回的副本。
+        Field field = Config.class.getDeclaredField("mAbOverrides");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, String> internal = (Map<String, String>) field.get(c);
+        internal.put("injected", "bad");
+        assertFalse("abOverrides() 必须返回快照副本", snapshot.containsKey("injected"));
+        assertEquals("1", snapshot.get("ab_key"));
     }
 
     /** 纯 JVM 的 PrefSource 替身：按 key 返回值，可指定某个 key 读取抛异常。 */

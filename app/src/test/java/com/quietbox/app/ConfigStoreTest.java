@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - remote 不可用时 put 返回 false，且绝不写本地冒充成功；
  * - commit 的真实结果通过回调返回，false / 抛异常都算失败；
  * - 所有写入走同一个后台线程，按提交顺序落盘。
+ *
+ * <p>回调线程：ConfigStore.notifyResetResult 优先 post 到 Looper 主线程，
+ * 单测 android.jar 桩里 Looper.getMainLooper() 恒为 null（returnDefaultValues=true），
+ * 所以本类只覆盖「当前线程直调」的降级分支；设备上的 Handler.post 路径不在本类
+ * 断言范围内，由 SettingsFragment 侧 MAIN.post 的二次派发兜底。
  */
 public class ConfigStoreTest {
 

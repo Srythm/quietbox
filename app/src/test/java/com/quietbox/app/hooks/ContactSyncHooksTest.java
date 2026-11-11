@@ -51,16 +51,23 @@ public class ContactSyncHooksTest {
         }
     }
 
-    /** onCompleted 只声明在接口上的替身（对应宿主里回调可能由接口提供）。 */
+    /**
+     * onCompleted 只声明在接口上的替身（对应宿主里回调可能由接口提供）。
+     * 实现类不重写该方法，因此只能经 findZeroArgMethod 的接口递归分支命中。
+     */
     interface OnCompletedInterface {
-        void onCompleted();
+        default void onCompleted() {
+            recordCompletion();
+        }
+
+        void recordCompletion();
     }
 
     static class CompletedOnInterface implements OnCompletedInterface {
         int completed;
 
         @Override
-        public void onCompleted() {
+        public void recordCompletion() {
             completed++;
         }
     }
@@ -82,16 +89,20 @@ public class ContactSyncHooksTest {
         }
     }
 
-    /** invoke() 只声明在接口上的替身。 */
+    /** invoke() 只声明在接口上的替身（实现类不重写，只能经接口分支命中）。 */
     interface InvokeInterface {
-        Object invoke();
+        default Object invoke() {
+            return recordInvocation();
+        }
+
+        Object recordInvocation();
     }
 
     static class Function0OnInterface implements InvokeInterface {
         int invoked;
 
         @Override
-        public Object invoke() {
+        public Object recordInvocation() {
             invoked++;
             return this;
         }

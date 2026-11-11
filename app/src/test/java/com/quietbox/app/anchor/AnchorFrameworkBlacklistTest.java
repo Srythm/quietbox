@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import org.junit.Assume;
 import org.junit.Test;
@@ -17,6 +18,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 锚点框架类黑名单契约（纯 JVM）：android./java./dalvik./androidx./kotlin. 开头的
@@ -75,15 +77,19 @@ public class AnchorFrameworkBlacklistTest {
         Map<String, Object> json = loadAnchors();
         Map<String, Object> anchors = object(json.get("anchors"));
         for (Map.Entry<String, Object> item : anchors.entrySet()) {
-            String className = (String) object(item.getValue()).get("c");
+            Object className = object(item.getValue()).get("c");
+            assertTrue("锚点 " + item.getKey() + " 缺少 c 字段（或不是 String）",
+                    className instanceof String);
             assertFalse("锚点 " + item.getKey() + " 指向框架类：" + className,
-                    AnchorTable.isFrameworkClass(className));
+                    AnchorTable.isFrameworkClass((String) className));
         }
         Map<String, Object> classes = object(json.get("classes"));
         for (Map.Entry<String, Object> item : classes.entrySet()) {
-            String className = (String) item.getValue();
+            Object className = item.getValue();
+            assertTrue("类锚点 " + item.getKey() + " 的类名必须是 String",
+                    className instanceof String);
             assertFalse("类锚点 " + item.getKey() + " 指向框架类：" + className,
-                    AnchorTable.isFrameworkClass(className));
+                    AnchorTable.isFrameworkClass((String) className));
         }
     }
 
@@ -97,8 +103,10 @@ public class AnchorFrameworkBlacklistTest {
         String source = read(script);
         assertTrue("生成器必须定义框架类前缀名单",
                 source.contains("FRAMEWORK_CLASS_PREFIXES"));
-        int guards = count(source, "is_framework_class(cls)");
-        assertTrue("生成器必须在 anchors 与 classes 两段都拒绝框架类（实际 " + guards + " 处）",
+        // 去掉参数名计数：只重命名循环变量（如 cls -> target）不应让守卫假失败（F397）。
+        int guards = countCalls(source, "is_framework_class(");
+        assertTrue("生成器必须在 anchors 与 classes 两段都调用 is_framework_class（实际 "
+                        + guards + " 处调用）",
                 guards >= 2);
 
         String python = findPython();
@@ -117,19 +125,29 @@ public class AnchorFrameworkBlacklistTest {
         builder.redirectErrorStream(true);
         Process process = builder.start();
         String output = readAll(process.getInputStream());
-        assertEquals("生成器判定函数行为不符：" + output, 0, process.waitFor());
+        // 子进程不退出时不得让 JVM 单测永久阻塞（F395）。
+        if (!process.waitFor(60, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            fail("生成器判定函数 60s 未退出，已强制终止：" + output);
+        }
+        assertEquals("生成器判定函数行为不符：" + output, 0, process.exitValue());
     }
 
     private static String findPython() {
         for (String candidate : new String[]{"python3", "python"}) {
+            Process process = null;
             try {
-                Process process = new ProcessBuilder(candidate, "--version")
+                process = new ProcessBuilder(candidate, "--version")
                         .redirectErrorStream(true).start();
-                if (process.waitFor() == 0) {
+                if (process.waitFor(60, TimeUnit.SECONDS) && process.exitValue() == 0) {
                     return candidate;
                 }
             } catch (Exception ignored) {
                 // 尝试下一个解释器名
+            } finally {
+                if (process != null) {
+                    process.destroyForcibly();
+                }
             }
         }
         return null;
@@ -193,6 +211,18 @@ public class AnchorFrameworkBlacklistTest {
         while (index >= 0) {
             total++;
             index = text.indexOf(needle, index + needle.length());
+        }
+        return total;
+    }
+
+    /** 统计调用次数：跳过 def 定义行，避免把函数定义本身算作一处守卫。 */
+    private static int countCalls(String text, String needle) {
+        int total = 0;
+        for (String line : text.split("\n")) {
+            if (line.trim().startsWith("def ")) {
+                continue;
+            }
+            total += count(line, needle);
         }
         return total;
     }

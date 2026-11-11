@@ -1,12 +1,14 @@
 package com.quietbox.app.hooks;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.database.ContentObserver;
+import android.net.Uri;
 
 import com.quietbox.app.Feature;
 import com.quietbox.app.HookState;
@@ -42,6 +44,27 @@ public class HookKitTest {
         return module;
     }
 
+    /**
+     * 记录 module.hook() 调用次数；hook() 返回 null，等价 HookKit.install 的失败分支。
+     * 用来证明豁免获批后确实发起了挂载，而不只是「没被黑名单拒绝」。
+     */
+    private static XposedModule hookCountingModule(AtomicInteger hookCalls) {
+        XposedInterface base = (XposedInterface) Proxy.newProxyInstance(
+                XposedInterface.class.getClassLoader(),
+                new Class<?>[]{XposedInterface.class},
+                (proxy, method, args) -> {
+                    if ("hook".equals(method.getName())) {
+                        hookCalls.incrementAndGet();
+                    }
+                    return null;
+                });
+        XposedModule module = new XposedModule() {
+        };
+        module.attachFramework(base, () -> {
+        });
+        return module;
+    }
+
     @Test
     public void frameworkPrefixesAreRejected() {
         for (String name : new String[]{
@@ -70,6 +93,12 @@ public class HookKitTest {
                 HookKit.isDiscoveryFrameworkClass("android.app.Application"));
         assertFalse("java.lang.Object 不在豁免名单内",
                 HookKit.isDiscoveryFrameworkClass("java.lang.Object"));
+        assertFalse("dalvik.* 不在豁免名单内",
+                HookKit.isDiscoveryFrameworkClass("dalvik.system.DexFile"));
+        assertFalse("androidx.* 不在豁免名单内",
+                HookKit.isDiscoveryFrameworkClass("androidx.preference.Preference"));
+        assertFalse("kotlin.* 不在豁免名单内",
+                HookKit.isDiscoveryFrameworkClass("kotlin.Unit"));
         assertFalse("null 不得命中豁免", HookKit.isDiscoveryFrameworkClass(null));
     }
 
@@ -77,7 +106,8 @@ public class HookKitTest {
     public void discoveryInstallStillRefusesOtherFrameworkClasses() throws Exception {
         Feature f = Feature.UPDATE_DIALOG_BLOCK;
         HookState.clearFailures(f);
-        XposedModule module = newModule();
+        AtomicInteger hookCalls = new AtomicInteger();
+        XposedModule module = hookCountingModule(hookCalls);
 
         boolean installed = HookKit.installForDiscovery(module, f, "framework-probe",
                 Object.class.getMethod("toString"), new XposedInterface.Hooker() {
@@ -88,6 +118,7 @@ public class HookKitTest {
                 });
 
         assertFalse("发现入口不得把 java.lang.Object 也放进去", installed);
+        assertEquals("被拒框架类不得发起 module.hook()", 0, hookCalls.get());
         assertTrue("必须继续记框架类黑名单 skip：" + HookState.skipReasons(f),
                 HookState.skipReasons(f).stream()
                         .anyMatch(r -> r.contains("框架类黑名单")
@@ -98,18 +129,15 @@ public class HookKitTest {
     public void discoveryInstallAllowsContentResolverOnly() throws Exception {
         Feature f = Feature.SCREENSHOT_DETECT_OFF;
         HookState.clearFailures(f);
-        XposedModule module = newModule();
+        AtomicInteger hookCalls = new AtomicInteger();
+        XposedModule module = hookCountingModule(hookCalls);
         Class<?> resolver = Class.forName("android.content.ContentResolver");
-        // 单测 classpath 的 android.jar 桩没有 ContentObserver，按名字+参数个数取重载。
-        Method m = null;
-        for (Method candidate : resolver.getDeclaredMethods()) {
-            if ("registerContentObserver".equals(candidate.getName())
-                    && candidate.getParameterTypes().length == 3) {
-                m = candidate;
-                break;
-            }
-        }
-        assertNotNull("测试前提：必须取到 registerContentObserver 三参重载", m);
+        // android-37.0 的 android.jar 桩包含 ContentObserver，按精确签名取重载。
+        Method m = resolver.getMethod("registerContentObserver",
+                Uri.class, boolean.class, ContentObserver.class);
+        assertArrayEquals("必须与 ScreenShotHooks 挂载的 3 参重载一致",
+                new Class<?>[]{Uri.class, boolean.class, ContentObserver.class},
+                m.getParameterTypes());
 
         boolean installed = HookKit.installForDiscovery(module, f, "registerContentObserver", m,
                 new XposedInterface.Hooker() {
@@ -121,6 +149,7 @@ public class HookKitTest {
 
         // 单测下 module.hook 是空实现，落不到 installed；关键是「不被黑名单拒绝」。
         assertFalse(installed);
+        assertEquals("豁免获批后必须真的发起一次 module.hook()", 1, hookCalls.get());
         assertFalse("ContentResolver 必须走豁免，不得记框架类黑名单",
                 HookState.skipReasons(f).stream()
                         .anyMatch(r -> r.contains("框架类黑名单")));
@@ -198,7 +227,9 @@ public class HookKitTest {
 
         int expected = 0;
         for (int i = 1; i <= calls; i++) {
-            if (HookKit.shouldLogHit(before + i)) {
+            // 在测试内联采样窗口，期望值不依赖被测谓词，谓词回归才能被检出。
+            long count = before + i;
+            if (count <= 5 || count % 100 == 0) {
                 expected++;
             }
         }

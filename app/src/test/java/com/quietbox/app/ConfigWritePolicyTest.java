@@ -65,8 +65,10 @@ public class ConfigWritePolicyTest {
     }
 
     @Test
-    public void nullServiceCanReuseStore() {
-        // 框架未绑定时 service 一直是 null，store 可复用（remote 不可用的状态不变）。
-        assertTrue(ConfigWritePolicy.reuseStore(true, null, null));
+    public void nullServiceDoesNotReuseStoreWhenServiceAppears() {
+        // 框架未绑定时 service 为 null；一旦拿到新 service，缓存 store 不得复用。
+        assertFalse(ConfigWritePolicy.reuseStore(true, null, new Object()));
+        assertFalse("没有 store 时同一 service 也不得复用",
+                ConfigWritePolicy.reuseStore(false, new Object(), new Object()));
     }
 }

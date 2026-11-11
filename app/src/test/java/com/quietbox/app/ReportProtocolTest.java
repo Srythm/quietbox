@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -24,6 +25,17 @@ import io.github.yigenhuobah.core.ReportProtocolCore;
  */
 public class ReportProtocolTest {
 
+    /**
+     * 本类所有 validKey 断言都依赖 ReportProtocol 静态块写入 core 的进程级白名单。
+     * 同 JVM 内其它测试类若调用 resetForTest()/configure()，这里必须先明确失败，
+     * 而不是让几十个 validKey 用例零散报错。
+     */
+    @Before
+    public void ensureModuleWhitelistInstalled() {
+        assertTrue("QuietBox 白名单必须已安装（reg.<Feature> 键应放行）",
+                ReportProtocol.validKey(ReportProtocol.PREFIX_REG + Feature.SPLASH_AD_SKIP.key));
+    }
+
     @Test
     public void validKeyAcceptsRepresentativePrefixes() {
         assertTrue(ReportProtocol.validKey("reg.p0_1_splash_ad_skip"));
@@ -32,16 +44,14 @@ public class ReportProtocolTest {
     }
 
     @Test
-    public void validKeyAcceptsAll78GeneratedKeys() {
-        int count = 0;
+    public void validKeyAcceptsAllGeneratedKeys() {
         for (Feature f : Feature.values()) {
             assertTrue(ReportProtocol.validKey(ReportProtocol.PREFIX_REG + f.key));
             assertTrue(ReportProtocol.validKey(ReportProtocol.PREFIX_HIT + f.key));
             assertTrue(ReportProtocol.validKey(ReportProtocol.PREFIX_SKIP + f.key));
-            count += 3;
         }
-        assertEquals(78, count);
-        // crash0/1/2 是白名单里的固定键（非 Feature 派生），不参与上面的 78 计数。
+        // crash0/1/2 是白名单里的固定键（非 Feature 派生），不参与上面的派生计数。
+        // Feature 数量由 FeatureTest 锁定，这里不再手写常量重复锁一遍。
         assertTrue(ReportProtocol.validKey(ReportProtocol.KEY_CRASH_0));
         assertTrue(ReportProtocol.validKey(ReportProtocol.KEY_CRASH_1));
         assertTrue(ReportProtocol.validKey(ReportProtocol.KEY_CRASH_2));

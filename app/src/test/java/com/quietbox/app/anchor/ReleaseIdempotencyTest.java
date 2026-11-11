@@ -122,6 +122,9 @@ public class ReleaseIdempotencyTest {
 
     /** 从 `name() {` 到行首 `}`，避免断言跨到相邻函数。 */
     private static String functionBlock(String script, String name) {
+        // 先归一化行尾：Windows 编辑器可能把脚本写成 CRLF，否则 "\n}\n" 找不到，
+        // 会被误报成「函数没有闭合」。
+        script = script.replace("\r\n", "\n");
         String marker = name + "() {";
         int start = script.indexOf(marker);
         if (start < 0) {
@@ -132,6 +135,15 @@ public class ReleaseIdempotencyTest {
             fail("release.sh 的函数 " + name + " 没有闭合");
         }
         return script.substring(start, end + 3);
+    }
+
+    @Test
+    public void functionBlockToleratesCrlfLineEndings() {
+        String crlf = "publish_source_tag() {\r\n  echo ok\r\n}\r\n"
+                + "publish_gh_release() {\r\n  echo next\r\n}\r\n";
+        String block = functionBlock(crlf, "publish_source_tag");
+        assertTrue("CRLF 脚本也必须能取到函数体", block.contains("echo ok"));
+        assertFalse("不得把相邻函数算进本函数", block.contains("echo next"));
     }
 
     private static File findRepoFile(String relative) {

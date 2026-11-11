@@ -50,6 +50,11 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
     private Future<?> mRefreshFuture;
     /** 刷新序号：旧后台任务晚到不能覆盖更新的快照。 */
     private long mRefreshSeq;
+    /**
+     * 最近一次已渲染的快照：复制/导出直接复用它，保证文本与屏幕上 header/功能行
+     * 同一时刻（F342），不再点击时另采一次样。
+     */
+    private DiagData mLastData;
 
     @Override
     public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
@@ -67,6 +72,7 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
     @Override
     public void onDestroyView() {
         mRefreshSeq++;
+        mLastData = null;
         if (mRefreshFuture != null) {
             mRefreshFuture.cancel(false);
             mRefreshFuture = null;
@@ -98,6 +104,7 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
                     return;
                 }
                 screen.removeAll();
+                mLastData = data;
                 build(screen, data);
             });
         });
@@ -130,7 +137,7 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
             }
         }
 
-        if (!hasData) {
+        if (showEmptyState(hasData, data.crashes)) {
             Preference empty = new Preference(requireContext());
             empty.setTitle(R.string.diag_empty_title);
             empty.setSummary(getString(R.string.diag_empty,
@@ -216,6 +223,13 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
     }
 
     private void copyDiagnostics() {
+        // 优先复用屏幕上那份快照：复制内容必须是「所见即所得」（F342）。
+        DiagData snapshot = mLastData;
+        if (snapshot != null) {
+            copyToClipboard(snapshot.copyText);
+            return;
+        }
+        // 首次刷新尚未完成时的兜底：仍然后台采集一次。
         Context context = getContext();
         if (context == null) {
             return;
@@ -231,18 +245,27 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
                 if (!isAdded() || getView() == null || getActivity() != host) {
                     return;
                 }
-                try {
-                    ClipboardManager cm = (ClipboardManager) app
-                            .getSystemService(Context.CLIPBOARD_SERVICE);
-                    if (cm != null) {
-                        cm.setPrimaryClip(ClipData.newPlainText("diagnostics", data.copyText));
-                        Toast.makeText(app, R.string.diag_copied, Toast.LENGTH_SHORT).show();
-                    }
-                } catch (Throwable ignored) {
-                    // 剪贴板不可用不阻塞诊断页。
-                }
+                copyToClipboard(data.copyText);
             });
         });
+    }
+
+    private void copyToClipboard(String text) {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        Context app = context.getApplicationContext();
+        try {
+            ClipboardManager cm = (ClipboardManager) (app != null ? app : context)
+                    .getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("diagnostics", text));
+                Toast.makeText(context, R.string.diag_copied, Toast.LENGTH_SHORT).show();
+            }
+        } catch (Throwable ignored) {
+            // 剪贴板不可用不阻塞诊断页。
+        }
     }
 
     /**
@@ -251,6 +274,12 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
      * FileProvider。文本在后台构建，分享面板拉不起来只弹 Toast，不阻塞诊断页。
      */
     private void exportDiagnostics() {
+        // 与复制一致：优先复用屏幕快照，导出内容与页面所见同一时刻（F342）。
+        DiagData snapshot = mLastData;
+        if (snapshot != null) {
+            shareDiagnostics(snapshot.exportText);
+            return;
+        }
         Context context = getContext();
         if (context == null) {
             return;
@@ -266,17 +295,22 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
                 if (!isAdded() || getView() == null || getActivity() != host) {
                     return;
                 }
-                try {
-                    Intent send = new Intent(Intent.ACTION_SEND);
-                    send.setType("text/plain");
-                    send.putExtra(Intent.EXTRA_TEXT, data.exportText);
-                    startActivity(Intent.createChooser(send,
-                            getString(R.string.diag_export_title)));
-                } catch (Throwable ignored) {
-                    Toast.makeText(app, R.string.diag_export_failed, Toast.LENGTH_SHORT).show();
-                }
+                shareDiagnostics(data.exportText);
             });
         });
+    }
+
+    private void shareDiagnostics(String text) {
+        try {
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_TEXT, text);
+            startActivity(Intent.createChooser(send,
+                    getString(R.string.diag_export_title)));
+        } catch (Throwable ignored) {
+            Toast.makeText(requireContext(), R.string.diag_export_failed,
+                    Toast.LENGTH_SHORT).show();
+        }
     }
 
     /**
@@ -473,6 +507,15 @@ public class DiagnosticsFragment extends PreferenceFragmentCompat {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 空态展示条件：只有「所有功能都无回传」且「没有任何崩溃」时才提示
+     * “暂无诊断数据”，否则会与下方已展示的「最近崩溃」区自相矛盾（F341）。
+     * 纯 JVM 可测。
+     */
+    static boolean showEmptyState(boolean hasData, String[] crashes) {
+        return !hasData && joinCrashText(crashes).isEmpty();
     }
 
     private static String readString(SharedPreferences sp, String key) {

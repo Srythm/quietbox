@@ -37,13 +37,11 @@ import io.github.libxposed.api.XposedModule;
 /**
  * AB 测试面板的运行时。
  *
- * 读取点只有三处，覆盖小红书 9.52.1 的全部 AB 读取：
+ * 读取点只有三处，覆盖小红书 9.53.0 的全部 AB 读取：
  * 1) oq.h#e / #b —— ABTest SDK 的 getValueJustOnce / getValue
- *    （9.52.1 为 oq.h#e/#b；9.52.0 为 XYExperimentImpl#f/#b，9.51.0/9.50.0 为 tq.h；
- *    签名不变，仅 getValueJustOnce 的方法名 f → e）；
- * 2) vk6.p#l —— ConfigCenter 的字符串取值总入口
- *    （9.52.1 为 vk6.p；9.52.0 为 XYConfigCenterImpl，9.51.0 为 mb6.o，9.50.0 为 eb6.o；
- *    方法名与签名不变）。
+ *    （9.53.0 为 oq.h#e/#b，签名见 anchors.json；历史版本对应关系见 CHANGELOG）；
+ * 2) cl6.p#l —— ConfigCenter 的字符串取值总入口
+ *    （9.53.0 为 cl6.p；方法名与签名不变）。
  *
  * 强制值来自模块 App：remote prefs 作为启动兜底，运行中每 3 秒通过
  * AbReportProvider 拉取本地副本（remote prefs 在宿主里是启动快照，不会热更新）。
@@ -112,7 +110,7 @@ public final class AbTestHooks {
     }
 
     /**
-     * vk6.p#l 直接返回字符串，调用方自己用 Gson 按 TypeToken 解析。
+     * cl6.p#l 直接返回字符串，调用方自己用 Gson 按 TypeToken 解析。
      * 因此这里喂回去的也必须是 Gson 能按目标类型解析的字面量，否则解析失败
      * 会静默回落到默认值。
      */
@@ -235,7 +233,8 @@ public final class AbTestHooks {
         }
 
         /**
-         * 只在这里碰一次框架 API；后台线程只读 SharedPreferences（线程安全）。
+         * 安装线程只调用一次 module.getRemotePreferences；框架类反射（context() 里的
+         * ActivityThread）与 provider binder 调用都发生在后台刷新线程。
          * 绑定失败必须记一次 WARN：否则 sPrefs 长期为 null，每次 refresh 的启动快照
          * 兜底都静默 return，日志与诊断页毫无线索（F-098）。
          */
@@ -279,20 +278,19 @@ public final class AbTestHooks {
             }
             AbTest test = AbTests.byKey(key);
             if (test == null) {
-                // 用户从「其他」列表手填的未收录 key：按值的字面形状推断类型。
+                // 防御分支：正常 UI 只会写 AbTests.ALL 里的 key；若覆盖表被外部/手工
+                // 改写成未收录 key，按值的字面形状推断类型。
                 test = guessType(key, value);
             }
             if (test == null) {
                 // 推断不出读点类型就不强开：硬塞一个类型会让调用方 checkcast 崩或静默失效。
                 if (sSkipped.add(key)) {
-                    Log.w(TAG, "EX-02 override ignored " + key + "=" + value
-                            + "：无法推断读点类型");
+                    Log.w(TAG, "EX-02 override ignored " + key + "：无法推断读点类型");
                 }
                 return null;
             }
             if (sLogged.add(key)) {
-                Log.i(TAG, "EX-02 override " + key + "=" + value
-                        + " type=" + test.valueType);
+                Log.i(TAG, "EX-02 override " + key + " type=" + test.valueType);
             }
             return test;
         }
@@ -411,7 +409,8 @@ public final class AbTestHooks {
                 return;
             }
             try {
-                boolean enabled = sp.getBoolean(Feature.AB_TEST_PANEL.key, false);
+                boolean enabled = sp.getBoolean(Feature.AB_TEST_PANEL.key,
+                        Feature.AB_TEST_PANEL.defaultEnabled);
                 apply(enabled, enabled
                         ? AbOverrides.parse(sp.getString(Config.KEY_AB_OVERRIDES, ""))
                         : Collections.emptyMap());
@@ -423,13 +422,18 @@ public final class AbTestHooks {
         /** 解析 provider 返回的覆盖表并应用（成功路径）。 */
         private static void applyFromBundle(Bundle b) {
             try {
-                boolean enabled = b.getBoolean(AbReportProvider.KEY_PANEL_ENABLED, false);
+                boolean enabled = b.getBoolean(AbReportProvider.KEY_PANEL_ENABLED,
+                        Feature.AB_TEST_PANEL.defaultEnabled);
                 String raw = b.getString(AbReportProvider.KEY_OVERRIDES, "");
+                Map<String, String> parsed = enabled
+                        ? AbOverrides.parse(raw) : Collections.emptyMap();
                 if (!raw.equals(sLastRaw)) {
                     sLastRaw = raw;
-                    Log.i(TAG, "EX-02 provider pull enabled=" + enabled + " raw=" + raw);
+                    // 只记条数，不把用户在面板填写的覆盖表原文写进 logcat。
+                    Log.i(TAG, "EX-02 provider pull enabled=" + enabled
+                            + " overrides n=" + parsed.size());
                 }
-                apply(enabled, enabled ? AbOverrides.parse(raw) : Collections.emptyMap());
+                apply(enabled, parsed);
             } catch (Throwable t) {
                 if (warnPullFailure()) {
                     Log.w(TAG, "EX-02 provider pull apply failed", t);
@@ -472,7 +476,8 @@ public final class AbTestHooks {
                 sSentValues.clear();
             }
             if (!next.equals(prev)) {
-                Log.i(TAG, "EX-02 overrides loaded: " + next);
+                // 只记条数：覆盖表内容来自用户输入，不整表写进 logcat。
+                Log.i(TAG, "EX-02 overrides loaded: n=" + next.size());
             }
         }
 

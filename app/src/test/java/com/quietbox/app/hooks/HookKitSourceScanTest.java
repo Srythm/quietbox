@@ -37,8 +37,13 @@ import io.github.yigenhuobah.core.test.SourceScan;
  */
 public class HookKitSourceScanTest {
 
+    /**
+     * 不限定的方法名匹配：同包调用可以省略 {@code HookKit.}，只认限定名会让
+     * {@code findByNameQuiet(cls, name)} 这类调用静默绕过门禁。属主类
+     * HookKit.java 内部的声明/自调用由用例按 file 豁免。
+     */
     private static final SourceScan.Rule NO_EXTERNAL_SILENT_NAME_LOOKUP = new SourceScan.Rule(
-            "\\bHookKit\\.findByNameQuiet\\s*\\(",
+            "\\bfindByNameQuiet\\s*\\(",
             "禁止直接调用静默的 HookKit.findByNameQuiet；请用带 Feature 的 "
                     + "HookKit.findMethod(module, f, cls, name) 以便记录 skip");
 
@@ -54,7 +59,7 @@ public class HookKitSourceScanTest {
      * 改名时 PV-01 定位整体静默失效，诊断页连 skip/critical 都没有。
      */
     private static final SourceScan.Rule NO_SILENT_METHOD_LOOKUP = new SourceScan.Rule(
-            "\\bHookKit\\.findMethodQuiet\\s*\\(",
+            "\\bfindMethodQuiet\\s*\\(",
             call -> isScopedQuietLookup(call) || isDiscoveryHandoff(call),
             "禁止直接调用静默的 HookKit.findMethodQuiet(Class, String, Class...)；"
                     + "请改用带 Feature 的 HookKit.findMethodQuiet(module, f, cls, name, ...)"
@@ -73,7 +78,11 @@ public class HookKitSourceScanTest {
         }
         String first = args.get(0).trim();
         String second = args.get(1).trim();
-        return !first.endsWith(".class") && !second.startsWith("\"");
+        // 记账重载的约定形状是 (module, f, cls, name, ...)：第 2 参必须是 Feature 变量。
+        // 只排除 ".class"/字符串字面量不够——旧重载 (cls, methodName, ...) 也能蒙混过关。
+        boolean featureArg = "f".equals(second) || "feature".equals(second)
+                || second.startsWith("Feature.");
+        return !first.endsWith(".class") && !second.startsWith("\"") && featureArg;
     }
 
     /** PV-01 发现重载：ScreenShotHooks 把结果交给 installForDiscovery 记账。 */
@@ -108,7 +117,9 @@ public class HookKitSourceScanTest {
                 depth++;
             } else if (c == ')' || c == ']' || c == '}') {
                 depth--;
-                if (c == ')' && depth == 0) {
+                // depth 从调用自身 '(' 之后开始计，配对的右括号应落到 -1；
+                // 若判 == 0，会漏掉最后一个实参（且被 lambda 的 () 提前截断）。
+                if (c == ')' && depth < 0) {
                     addArg(args, call.substring(start, i));
                     return args;
                 }
@@ -129,10 +140,25 @@ public class HookKitSourceScanTest {
 
     private static final SourceScan.Rule CRASH_FLUSH = new SourceScan.Rule(
             "\\bCrashFlush\\.runBestEffort\\s*\\(",
-            call -> call.contains("Report.flushNow") && call.contains("200")
-                    && call.contains("CRASH_LOGGER") && call.contains("TAG"),
+            HookKitSourceScanTest::isCrashFlushCall,
             "UEH 崩溃路径必须调用 CrashFlush.runBestEffort(() -> Report.flushNow(), 200, "
                     + "logger, TAG)，让超时/异常以 WARN 可见");
+
+    /**
+     * 按实参位置校验崩溃 flush：任务体必须调 Report.flushNow，第二个实参（timeoutMs）
+     * 必须是字面量 200，后两个实参分别是 CRASH_LOGGER 与 TAG。只看“文本里出现过 200”
+     * 会把其它位置的数字误判成预算。
+     */
+    private static boolean isCrashFlushCall(String call) {
+        List<String> args = topLevelArgs(call);
+        if (args.size() < 4) {
+            return false;
+        }
+        return args.get(0).contains("Report.flushNow")
+                && "200".equals(args.get(1).trim())
+                && args.get(2).contains("CRASH_LOGGER")
+                && args.get(3).contains("TAG");
+    }
 
     /** 旧的不记日志入口：崩溃 flush 超时或任务抛异常时完全静默，必须禁止回退。 */
     private static final SourceScan.Rule NO_SILENT_CRASH_FLUSH = new SourceScan.Rule(
@@ -187,7 +213,8 @@ public class HookKitSourceScanTest {
             return true;
         }
         String third = args.get(2).trim();
-        return third.length() >= 2 && third.startsWith("\"") && third.endsWith("\"");
+        // 不能只看首尾引号：`"h8b.e#b(x)" + ""` 同样以引号收尾，但它是拼接表达式。
+        return isSingleStringLiteral(third);
     }
 
     /** 取第 3 参的原始源码文本（用于与动态 label 清单比对）。 */
@@ -206,67 +233,64 @@ public class HookKitSourceScanTest {
 
     /**
      * 取 install(module, f, "...", ...) 的第 3 参字符串内容；
-     * 拼接型 label（"code=" + CONST）不在本规则管辖范围，返回 null。
-     * 只做顶层逗号切分，够覆盖本仓的全部 install 调用。
+     * 只有第 3 个实参整体就是一个字符串字面量时才返回其内容（不含引号）。
+     * 拼接型/嵌套表达式（"code=" + CONST、foo("x")）返回 null，避免把第一个
+     * 字面量误当成整个 label 而漏掉后半段。
      */
     private static String thirdArgumentLabel(String call) {
-        int open = call.indexOf('(');
-        if (open < 0) {
+        List<String> args = topLevelArgs(call);
+        if (args.size() < 3) {
             return null;
         }
-        int start = open + 1;
-        int argIndex = 0;
-        int depth = 0;
-        boolean inString = false;
-        for (int i = start; i < call.length(); i++) {
-            char c = call.charAt(i);
-            if (inString) {
-                if (c == '\\') {
-                    i++;
-                } else if (c == '"') {
-                    inString = false;
-                    if (argIndex == 2) {
-                        return call.substring(start, i);
-                    }
-                }
-                continue;
-            }
-            if (c == '"') {
-                inString = true;
-                if (argIndex == 2) {
-                    start = i + 1;
-                }
-                continue;
-            }
-            if (c == '(' || c == '[' || c == '{') {
-                depth++;
-            } else if (c == ')' || c == ']' || c == '}') {
-                if (c == ')' && depth == 0) {
-                    return null;
-                }
-                depth--;
-            } else if (c == ',' && depth == 0) {
-                argIndex++;
-                if (argIndex > 2) {
-                    return null;
-                }
+        String third = args.get(2).trim();
+        if (!isSingleStringLiteral(third)) {
+            return null;
+        }
+        return third.substring(1, third.length() - 1);
+    }
+
+    /** 实参文本是否整体就是一个字符串字面量（拼接/嵌套表达式不算）。 */
+    private static boolean isSingleStringLiteral(String arg) {
+        if (arg.length() < 2 || arg.charAt(0) != '"') {
+            return false;
+        }
+        for (int i = 1; i < arg.length(); i++) {
+            char c = arg.charAt(i);
+            if (c == '\\') {
+                i++;
+            } else if (c == '"') {
+                return i == arg.length() - 1;
             }
         }
-        return null;
+        return false;
     }
 
     @Test
     public void crashHandlerFlushesSynchronouslyWithinBudget() throws IOException {
-        List<SourceScan.Finding> findings = SourceScan.scan(hooksSource(), CRASH_FLUSH);
+        // 崩溃路径只在 Report.java：按 file 过滤后只校验这一处，避免将来别处新增
+        // 合法调用点因参数形状不同被误报，失败信息也直接指向真正违约的文件。
+        List<SourceScan.Finding> reportFindings = inReport(
+                SourceScan.scan(hooksSource(), CRASH_FLUSH));
 
         assertTrue("崩溃路径必须使用 CrashFlush.runBestEffort(...Report.flushNow()..., 200, "
-                + "CRASH_LOGGER, TAG)：" + findings, findings.isEmpty());
-        // 反向确认规则不是空转：至少存在一条 runBestEffort 调用。
+                + "CRASH_LOGGER, TAG)：" + reportFindings, reportFindings.isEmpty());
+        // 反向确认规则不是空转：Report.java 必须实际存在 runBestEffort 调用。
         assertFalse("Report.java 必须实际调用 CrashFlush.runBestEffort",
-                SourceScan.scan(hooksSource(),
+                inReport(SourceScan.scan(hooksSource(),
                         new SourceScan.Rule("\\bCrashFlush\\.runBestEffort\\s*\\(",
-                                "崩溃 flush 缺失"))
+                                "崩溃 flush 缺失")))
                         .isEmpty());
+    }
+
+    /** 只保留 Report.java 的命中；其它文件的调用点不属于本规则的崩溃路径。 */
+    private static List<SourceScan.Finding> inReport(List<SourceScan.Finding> findings) {
+        List<SourceScan.Finding> out = new java.util.ArrayList<>();
+        for (SourceScan.Finding finding : findings) {
+            if ("Report.java".equals(finding.file)) {
+                out.add(finding);
+            }
+        }
+        return out;
     }
 
     @Test
@@ -294,19 +318,22 @@ public class HookKitSourceScanTest {
         List<SourceScan.Finding> findings = SourceScan.scan(
                 hooksSource(), Collections.singletonList(NO_EXTERNAL_SILENT_NAME_LOOKUP));
 
-        assertTrue("hook 包不得直接调用静默的 findByNameQuiet：" + findings,
-                findings.isEmpty());
+        for (SourceScan.Finding finding : findings) {
+            assertEquals("静默 findByNameQuiet 只允许 HookKit 属主类内部使用：" + finding,
+                    "HookKit.java", finding.file);
+        }
     }
 
     /** 规则本身必须能命中旧写法，避免以后把正则改坏后门禁静默通过。 */
     @Test
     public void silentNameLookupRuleCatchesLegacyCall() {
-        String source = "class A { void a() { HookKit.findByNameQuiet(cls, \"m\"); } }";
+        String qualified = "class A { void a() { HookKit.findByNameQuiet(cls, \"m\"); } }";
+        String unqualified = "class A { void a() { findByNameQuiet(cls, \"m\"); } }";
 
-        List<SourceScan.Finding> findings = SourceScan.scanSource(
-                source, "A.java", NO_EXTERNAL_SILENT_NAME_LOOKUP);
-
-        assertEquals(1, findings.size());
+        assertEquals(1, SourceScan.scanSource(
+                qualified, "A.java", NO_EXTERNAL_SILENT_NAME_LOOKUP).size());
+        assertEquals("同包省略 HookKit. 的调用也必须命中", 1, SourceScan.scanSource(
+                unqualified, "A.java", NO_EXTERNAL_SILENT_NAME_LOOKUP).size());
     }
 
     /**
@@ -321,25 +348,33 @@ public class HookKitSourceScanTest {
         List<SourceScan.Finding> findings = SourceScan.scan(
                 hooksSource(), Collections.singletonList(NO_SILENT_METHOD_LOOKUP));
 
+        int external = 0;
         for (SourceScan.Finding finding : findings) {
+            if ("HookKit.java".equals(finding.file)) {
+                // 属主类的内部静默重载调用/声明，不对外部调用点设限。
+                continue;
+            }
+            external++;
             assertTrue("只允许 ScreenShotHooks :94/:116 的 onChange 静默定位存量缺口"
                             + "（属主补诊断记录后应消失）；新增静默定位必须记账：" + finding,
                     "ScreenShotHooks.java".equals(finding.file)
                             && finding.snippet.contains("\"onChange\""));
         }
-        assertTrue("门禁不得放过 3 处以上静默定位：" + findings, findings.size() <= 2);
+        assertTrue("门禁不得放过 3 处以上静默定位：" + findings, external <= 2);
     }
 
     /** 规则本身必须能命中旧写法，避免以后把正则改坏后门禁静默通过。 */
     @Test
     public void silentMethodLookupRuleCatchesLegacyCall() {
-        String source = "class A { void a() { if (HookKit.findMethodQuiet("
+        String qualified = "class A { void a() { if (HookKit.findMethodQuiet("
+                + "cls, \"onChange\", boolean.class, Uri.class) == null) return; } }";
+        String unqualified = "class A { void a() { if (findMethodQuiet("
                 + "cls, \"onChange\", boolean.class, Uri.class) == null) return; } }";
 
-        List<SourceScan.Finding> findings = SourceScan.scanSource(
-                source, "A.java", NO_SILENT_METHOD_LOOKUP);
-
-        assertEquals("旧的无上下文重载必须被门禁抓住", 1, findings.size());
+        assertEquals("旧的无上下文重载必须被门禁抓住", 1,
+                SourceScan.scanSource(qualified, "A.java", NO_SILENT_METHOD_LOOKUP).size());
+        assertEquals("同包省略 HookKit. 的调用也必须被门禁抓住", 1,
+                SourceScan.scanSource(unqualified, "A.java", NO_SILENT_METHOD_LOOKUP).size());
     }
 
     /** 带 Feature/label 的记账重载不能被误报（失败由 HookKit 统一记 skip）。 */
@@ -421,6 +456,26 @@ public class HookKitSourceScanTest {
         assertEquals(1, findings.size());
     }
 
+    /** F407：拼接型第 3 参不是「一个纯字面量」，本规则不取其中第一个字面量。 */
+    @Test
+    public void obfuscatedLabelRuleOnlyChecksPureLiteralThirdArgument() {
+        String source = "class A { void a() { HookKit.install(module, f, "
+                + "\"h8b.e#b(x)\" + \"\", m, hooker); } }";
+
+        assertTrue("拼接 label 交给动态 label 台账，本规则只检查纯字面量",
+                SourceScan.scanSource(source, "A.java", NO_OBFUSCATED_HOOK_LABEL).isEmpty());
+    }
+
+    /** F407：以字面量结尾的拼接表达式仍不是纯字面量，动态 label 门禁必须抓住。 */
+    @Test
+    public void dynamicLabelRuleTreatsConcatenationEndingWithLiteralAsDynamic() {
+        String source = "class A { void a() { HookKit.install(module, f, "
+                + "\"h8b.e#b(x)\" + \"\", m, hooker); } }";
+
+        assertEquals("拼接表达式即使以字面量结尾也必须按非字面量登记",
+                1, SourceScan.scanSource(source, "A.java", NO_DYNAMIC_HOOK_LABEL).size());
+    }
+
     /**
      * F-120：第 3 参不是字面量的 install 调用点必须显式登记（file + 第 3 参表达式），
      * 否则「用运行时混淆类名当 label」会像旧规则那样静默漏过。这里的清单是唯一
@@ -457,7 +512,12 @@ public class HookKitSourceScanTest {
             case "AbTestHooks.java":        // "ABStore#" + key —— 稳定前缀 + 常量 key
                 return ("\"ABStore#\" + key").equals(third);
             case "ScreenShotHooks.java":    // 已知缺口：key = outer.getName()（运行时混淆类名）
-                return "key".equals(third);
+                return "key".equals(third) || "HOOK_LABEL".equals(third);
+            case "LivePhotoWatermarkHooks.java":
+                // "livePhotoSaveSwitch(code=" + LIVE_PHOTO_SAVE_SWITCH_CODE + "→false)"
+                // —— 稳定前后缀 + 编译期常量，不含运行时类名。
+                return ("\"livePhotoSaveSwitch(code=\" + LIVE_PHOTO_SAVE_SWITCH_CODE "
+                        + "+ \"→false)\"").equals(third);
             default:
                 return false;
         }
