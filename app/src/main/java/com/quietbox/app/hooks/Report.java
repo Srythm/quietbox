@@ -291,8 +291,10 @@ final class Report {
     static boolean shouldFlush(Map<String, String> content, long now) {
         synchronized (FLUSH_LOCK) {
             boolean changed = !content.equals(sLast);
-            if (changed) {
-                // 内容已变化：立即重试，不受失败退避限制（与 noteFailure 的注释一致）。
+            if (changed && (sLastOk != 0 || now >= sNextTry)) {
+                // 内容已变化：已经成功回传过就立即重试（不被一次失败残留的退避压住）；
+                // 首次成功之前没有可信的「上一版内容」，内容永远算变化，必须受退避约束，
+                // 否则 provider 长期不可用时会每 3 秒发起一次最长 2 秒的 binder 调用。
                 return true;
             }
             // 内容没变也要按心跳重发，否则 meta.updated_at 会一直停在旧值，
@@ -318,7 +320,7 @@ final class Report {
 
     /**
      * call() 返回 null / 超时 / 抛异常都视为 provider 暂不可达：退避 60 秒，
-     * 不更新 sLast，下次内容变化或退避到期后再试。失败计数与退避写入都在锁内，
+     * 不更新 sLast（退避到期后内容变化才重试），失败计数与退避写入都在锁内，
      * 避免 sErrors++ 丢更新。
      */
     static void noteFailure() {

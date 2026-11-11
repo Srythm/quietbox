@@ -128,7 +128,7 @@ cd "$ROOT_DIR"
 
 # ---------- 版本号 ----------
 [ -f "$GRADLE_FILE" ] || die "找不到 $GRADLE_FILE"
-VERSION="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]+"([^"]+)".*/\1/p' "$GRADLE_FILE" | head -1)"
+VERSION="$(sed -nE "s/^[[:space:]]*versionName[[:space:]]+['\"]([^'\"]+)['\"].*/\1/p" "$GRADLE_FILE" | head -1)"
 VERSION_CODE="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]+([0-9]+).*/\1/p' "$GRADLE_FILE" | head -1)"
 [ -n "$VERSION" ] || die "无法从 app/build.gradle 读取 versionName"
 [ -n "$VERSION_CODE" ] || die "无法从 app/build.gradle 读取 versionCode"

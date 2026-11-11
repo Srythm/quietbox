@@ -93,7 +93,7 @@ done
 # ---------- 读取 app/build.gradle 版本号 ----------
 [ -f "$GRADLE_FILE" ] || die "找不到 $GRADLE_FILE"
 BUILD_VERSION_CODE="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]+([0-9]+).*/\1/p' "$GRADLE_FILE" | head -1)"
-BUILD_VERSION_NAME="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]+"([^"]+)".*/\1/p' "$GRADLE_FILE" | head -1)"
+BUILD_VERSION_NAME="$(sed -nE "s/^[[:space:]]*versionName[[:space:]]+['\"]([^'\"]+)['\"].*/\1/p" "$GRADLE_FILE" | head -1)"
 [ -n "$BUILD_VERSION_CODE" ] || die "无法从 app/build.gradle 读取 versionCode"
 [ -n "$BUILD_VERSION_NAME" ] || die "无法从 app/build.gradle 读取 versionName"
 
