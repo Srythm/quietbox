@@ -241,6 +241,26 @@ ANCHORS = {
         "feature": "EN-04", "critical": True,
         "note": "FunctionSwitch type（判定下载类型）",
     },
+    "force_save_operate_disable": {
+        "c": "com.xingin.entities.ShareInfoDetail$Operate", "m": "a", "s": "()Z",
+        "feature": "EN-04", "critical": True,
+        "note": "分享/长按条目 disable 判定（false=可点击执行）",
+    },
+    "force_save_item_disable": {
+        "c": "j69.l", "m": "d", "s": "()Ljava/lang/Boolean;",
+        "feature": "EN-04", "critical": True,
+        "note": "长按/分享面板条目 disable（true=灰且点击只弹 disableToast）",
+    },
+    "force_save_item_type": {
+        "c": "j69.l", "m": "k", "s": "()Ljava/lang/String;",
+        "feature": "EN-04", "critical": True,
+        "note": "条目类型（Download / Dislike / Report …）",
+    },
+    "force_save_operate_type": {
+        "c": "com.xingin.entities.ShareInfoDetail$Operate", "m": "h", "s": "()Ljava/lang/String;",
+        "feature": "EN-04", "critical": True,
+        "note": "条目类型（image_download / video_download）",
+    },
     "autoplay_detail_open": {
         "c": "com.xingin.detailfeed.services.autoscroll.AutoScrollStateHelper", "m": "isAutoPlayOpen", "s": "()Z",
         "feature": "UI-05", "critical": True,

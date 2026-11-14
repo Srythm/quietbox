@@ -39,6 +39,23 @@ public class ForceSaveHooksTest {
     }
 
     @Test
+    public void downloadItemTypesAreMatched() {
+        // 长按/分享面板条目的 type 是 "Download"（首字母大写），与 FunctionSwitch 的
+        // "image_download" 命名不同，两种都要认。
+        assertTrue(ForceSaveHooks.isDownloadItem("Download"));
+        assertTrue(ForceSaveHooks.isDownloadItem("image_download"));
+        assertTrue(ForceSaveHooks.isDownloadItem("video_download"));
+    }
+
+    @Test
+    public void nonDownloadItemsKeepHostValue() {
+        assertFalse(ForceSaveHooks.isDownloadItem("Dislike"));
+        assertFalse(ForceSaveHooks.isDownloadItem("Report"));
+        assertFalse(ForceSaveHooks.isDownloadItem(""));
+        assertFalse(ForceSaveHooks.isDownloadItem(null));
+    }
+
+    @Test
     public void typeMatchIsExactNotPrefix() {
         // 防止将来改成 startsWith/contains 时把 video_download_x 之类误放行
         assertFalse(ForceSaveHooks.shouldForceEnable("image_download_extra"));
@@ -78,6 +95,23 @@ public class ForceSaveHooksTest {
                 source.contains("\"MediaSaveConfig#getDisableSave(allow-save)\"")
                         && source.contains("HookKit.constBool(module, f, "
                                 + "\"MediaSaveConfig#getDisableSave\", false)"));
+    }
+
+    /**
+     * 9.53.0 真机复核：按钮置灰的调用方直读 {@code disableSaveMedia} 字段（iget），
+     * getter hook 拿不到采纳。必须有一条「构造后改字段」的路径，这里钉住它存在。
+     */
+    @Test
+    public void rewritesDisableSaveMediaOnConstruct() throws Exception {
+        String source = new String(Files.readAllBytes(locateForceSaveHooks()),
+                StandardCharsets.UTF_8);
+        assertTrue("必须用 getDeclaredConstructor 解析构造器（getDeclaredMethod 不认 <init>）",
+                source.contains("getDeclaredConstructor("));
+        assertTrue("必须改写 disableSaveMedia 字段",
+                source.contains("\"disableSaveMedia\""));
+        assertTrue("改写在 proceed 之后、且只在原值为 true 时执行",
+                source.contains("Object result = chain.proceed();")
+                        && source.contains("if (before)"));
     }
 
     private static Path locateForceSaveHooks() {

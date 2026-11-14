@@ -50,6 +50,10 @@ public final class AnchorKeys {
     public static final String FORCE_SAVE_MEDIA_CONFIG_V2 = "force_save_media_config_v2";
     public static final String FORCE_SAVE_FUNCTION_ENABLE = "force_save_function_enable";
     public static final String FORCE_SAVE_FUNCTION_TYPE = "force_save_function_type";
+    public static final String FORCE_SAVE_OPERATE_DISABLE = "force_save_operate_disable";
+    public static final String FORCE_SAVE_ITEM_DISABLE = "force_save_item_disable";
+    public static final String FORCE_SAVE_ITEM_TYPE = "force_save_item_type";
+    public static final String FORCE_SAVE_OPERATE_TYPE = "force_save_operate_type";
     public static final String AUTOPLAY_DETAIL_OPEN = "autoplay_detail_open";
     public static final String AUTOPLAY_DETAIL_SERVER = "autoplay_detail_server";
     public static final String AUTOPLAY_TAB_OPEN = "autoplay_tab_open";
