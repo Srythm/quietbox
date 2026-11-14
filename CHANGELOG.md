@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.9.11 - 2026-11-14
+
+### 修复
+
+- **EN-04 找到真正的主门：长按/分享面板条目 `disable`**。真机抓栈（点击时宿主的 toast 调用链）与取值探针证实：点「保存」时既不进 `MediaSaveConfig` 也不进 `FunctionSwitch`，而是由 `ItemTopButtonPresenter` 的 lambda 直接弹条目自带的 `disableToast`；那一刻条目模型的 `disable` 取值为 `true`。新增 `force_save_item_disable`（`j69.l#d()`）与 `force_save_item_type`（`j69.l#k()`）两条锚点，只对 `Download` 类条目把 `disable` 置 false，其余（Dislike / Report / 空类型）保留宿主原值。静态体检清单 68 → 72。
+- **同批补入 `ShareInfoDetail$Operate#a()`（disable）门**：该路径在 9.53.0 的长按/分享链路里命中 0 次（JSON 直接落字段，不调 getter），保留为兼容旧链路的兜底。
+
+### 验证
+
+- 真机：点「保存」后 `/sdcard/DCIM/Camera_XHS_17946235220631040g008327hib27q6e6g5nl5jqm08pg6c1vncr8.jpg` 落盘。
+- `check-anchors.sh`：72/72；`:app:testDebugUnitTest` 491 用例 0 失败（新增 4 个条目类型用例）。
+
 ## 0.9.10 - 2026-11-14
 
 ### 修复
