@@ -13,19 +13,24 @@ import io.github.libxposed.api.XposedModule;
 /**
  * EN-04 强制允许保存。
  *
- * <p>「作者关闭下载」有两道门（9.52.0 dexsql 核实）：
+ * <p>「作者关闭下载」有三道门（9.52.0 dexsql 核实，9.53.0 真机复核）：
  * <ol>
  *   <li>旧门：{@code com.xingin.entities.MediaSaveConfig.b()} = disable_save。
  *       长按/反馈面板的保存项、分享面板、下载入口都读它（调用方包括
  *       {@code DetailFeedItemFeedbackController#t2}、{@code VideoItemFeedBackController#ub}、
  *       {@code AsyncImageGalleryController#S3} 等）。强制返回 false 即解除。</li>
- *   <li>新门（服务端灰度）：{@code com.xingin.entities.notedetail.FunctionSwitch.a()} = enable，
+ *   <li>新模型门（9.53.0）：{@code com.xingin.arch.model.note.config.MediaSaveConfig#getDisableSave()}。
+ *       9.53.0 的保存判定已迁移到 arch 模型；旧实体只是 {@code xq6.i} 从新模型拷贝构造出的
+ *       兼容结构（{@code <init>(ZZZ)V}）。只挂旧门会出现「有命中、保存仍被拦」——
+ *       2026-11-14 真机日志即是此形态（EN-04 hit 4 次、DCIM 无新增）。</li>
+ *   <li>服务端灰度门：{@code com.xingin.entities.notedetail.FunctionSwitch.a()} = enable，
  *       配合 {@code c()} = type。分享面板列表构造 {@code sq9/b#a} 与下载入口
  *       {@code matrix/notedetail/feedback/download/d#invoke} 按 type 过滤。只对
- *       {@code image_download}/{@code video_download} 强制 true，避免放开无关的 function switch。</li>
+ *       {@code image_download}/{@code video_download} 强制 true，避免放开无关的 function switch。
+ *       9.53.0 真机上该方法注册成功但命中 0 次，保存链路已不再经过它。</li>
  * </ol>
  *
- * <p>两道门都只改「是否允许保存」的判定，不改保存执行链本身；水印仍由 EN-01/EN-03 负责。
+ * <p>三道门都只改「是否允许保存」的判定，不改保存执行链本身；水印仍由 EN-01/EN-03 负责。
  */
 final class ForceSaveHooks {
 
@@ -67,7 +72,7 @@ final class ForceSaveHooks {
         // 门 1：MediaSaveConfig.b() -> false（主门，缺失即功能不可用）。
         try {
             // 2026-11-06 起 b() 已收编为方法锚点，check-mounts 会逐项校验；
-            // 宿主改名时走 critical skip，不再出现「门 2 成功、门 1 静默缺失」。
+            // 宿主改名时走 critical skip，不再出现「灰度门成功、旧门静默缺失」。
             Method m = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.FORCE_SAVE_MEDIA_CONFIG, true);
             if (m != null && HookKit.install(module, f, "MediaSaveConfig#b(allow-save)", m,
@@ -78,7 +83,22 @@ final class ForceSaveHooks {
             HookKit.warn(module, f.id + " skip: MediaSaveConfig " + t);
         }
 
-        // 门 2：FunctionSwitch.a() -> true，仅 image_download / video_download。
+        // 门 2：arch 模型 getDisableSave() -> false（9.53.0 的实际判定，缺失即功能不可用）。
+        // 旧实体由 xq6.i 从新模型拷贝构造，新模型才是上游真源；只挂旧门会出现
+        // 「有命中、保存仍被拦」（2026-11-14 真机复核：EN-04 hit 4 次、DCIM 无新增）。
+        try {
+            Method m = HookKit.findAnchorMethod(module, f, cl,
+                    AnchorKeys.FORCE_SAVE_MEDIA_CONFIG_V2, true);
+            if (m != null && HookKit.install(module, f,
+                    "MediaSaveConfig#getDisableSave(allow-save)", m,
+                    HookKit.constBool(module, f, "MediaSaveConfig#getDisableSave", false))) {
+                installed++;
+            }
+        } catch (Throwable t) {
+            HookKit.warn(module, f.id + " skip: arch MediaSaveConfig " + t);
+        }
+
+        // 门 3：FunctionSwitch.a() -> true，仅 image_download / video_download。
         try {
             Method enable = HookKit.findAnchorMethod(module, f, cl,
                     AnchorKeys.FORCE_SAVE_FUNCTION_ENABLE, true);

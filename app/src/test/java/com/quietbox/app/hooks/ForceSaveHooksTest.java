@@ -62,6 +62,24 @@ public class ForceSaveHooksTest {
                 source.contains("return originalOrFalse(original);"));
     }
 
+    /**
+     * EN-04 必须同时挂旧门与新模型门：9.53.0 的保存判定已迁到 arch 模型
+     * （旧实体只是 xq6.i 从新模型拷贝构造的兼容结构），只挂旧门会出现
+     * 「诊断页有 hit、保存仍被拦」。这里钉住新模型锚点与挂载同时存在，
+     * 防止将来删锚点或删挂载只删一半。
+     */
+    @Test
+    public void installsArchModelGate() throws Exception {
+        String source = new String(Files.readAllBytes(locateForceSaveHooks()),
+                StandardCharsets.UTF_8);
+        assertTrue("必须引用 arch 模型锚点常量",
+                source.contains("AnchorKeys.FORCE_SAVE_MEDIA_CONFIG_V2"));
+        assertTrue("新模型门必须固定返回 false（允许保存）",
+                source.contains("\"MediaSaveConfig#getDisableSave(allow-save)\"")
+                        && source.contains("HookKit.constBool(module, f, "
+                                + "\"MediaSaveConfig#getDisableSave\", false)"));
+    }
+
     private static Path locateForceSaveHooks() {
         return TestPaths.resolveFromCwd(
                 "src/main/java/com/quietbox/app/hooks/ForceSaveHooks.java",

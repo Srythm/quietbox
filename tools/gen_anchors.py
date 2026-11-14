@@ -226,6 +226,11 @@ ANCHORS = {
         "feature": "EN-04", "critical": True,
         "note": "旧门 disable_save 判定（false=允许保存）",
     },
+    "force_save_media_config_v2": {
+        "c": "com.xingin.arch.model.note.config.MediaSaveConfig", "m": "getDisableSave", "s": "()Z",
+        "feature": "EN-04", "critical": True,
+        "note": "新门（arch 模型）disableSave 判定（false=允许保存）；9.53.0 保存判定已迁移到此",
+    },
     "force_save_function_enable": {
         "c": "com.xingin.entities.notedetail.FunctionSwitch", "m": "a", "s": "()Z",
         "feature": "EN-04", "critical": True,
