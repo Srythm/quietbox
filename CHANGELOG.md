@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.9.10 - 2026-11-14
+
+### 修复
+
+- **EN-04 补 9.53.0 新模型门**：`anchors.json` 新增 `force_save_media_config_v2` → `com.xingin.arch.model.note.config.MediaSaveConfig#getDisableSave()Z`，静态体检清单 67 → 68。9.53.0 的保存判定已从 `com.xingin.entities.MediaSaveConfig` 迁到 arch 模型的 Kotlin data class，旧实体只是 `xq6.i` 从新模型拷贝构造的兼容结构（`<init>(ZZZ)V`）；只挂旧门会出现「EN-04 hit 有记录、保存仍被拦、DCIM 无新增」。
+- **EN-04 改为三门齐挂**：旧门 `entities.MediaSaveConfig#b()`、新模型门 `arch.model.note.config.MediaSaveConfig#getDisableSave()`、灰度门 `FunctionSwitch#a()/#c()`。三门互相独立记账，任一挂载成功即不判功能失败；`check-mounts` 的 `CHECKLIST_SIZE` 同步到 68。
+
+### 已知限制
+
+- 新增锚点已用纯 Python DEX 校验（`check-anchors.sh`：methods 68/68、classes 6/6），尚未真机确认保存真正落盘。
+- `FunctionSwitch#a()` 在 9.53.0 真机上注册成功但命中 0 次，保存链路已不再经过它；保留挂载只为兼容仍走灰度的账号。
+
 ## 0.9.9 - 2026-11-11
 
 ### 修复
