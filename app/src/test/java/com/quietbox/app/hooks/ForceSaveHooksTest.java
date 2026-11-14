@@ -62,6 +62,45 @@ public class ForceSaveHooksTest {
                 source.contains("return originalOrFalse(original);"));
     }
 
+    @Test
+    public void downloadItemTypesAreMatched() {
+        // 条目模型的 type 实际取值是 "Download"（首字母大写），与 FunctionSwitch 的
+        // "image_download" 命名不同，两种写法都要认。
+        assertTrue(ForceSaveHooks.isDownloadItem("Download"));
+        assertTrue(ForceSaveHooks.isDownloadItem("image_download"));
+        assertTrue(ForceSaveHooks.isDownloadItem("video_download"));
+    }
+
+    @Test
+    public void nonDownloadItemsKeepHostValue() {
+        assertFalse(ForceSaveHooks.isDownloadItem("Dislike"));
+        assertFalse(ForceSaveHooks.isDownloadItem("Report"));
+        assertFalse(ForceSaveHooks.isDownloadItem(""));
+        assertFalse(ForceSaveHooks.isDownloadItem(null));
+    }
+
+    /**
+     * 门 3 源码护栏：只翻 true -> false，且只在下载类条目上翻。
+     *
+     * <p>宿主给 null 表示「未表态」，若一并改成 false 等于替别处做决定；把类型判断
+     * 放宽会让 Dislike / Report 这类本该灰着的条目变可点。两条都在这里钉死。
+     */
+    @Test
+    public void itemGateOnlyFlipsDownloadEntries() throws Exception {
+        String source = new String(Files.readAllBytes(locateForceSaveHooks()),
+                StandardCharsets.UTF_8);
+        assertTrue("只在宿主原值为 TRUE 时改写",
+                source.contains("Boolean.TRUE.equals(original)"));
+        assertTrue("必须同时满足 instanceof String 与下载类白名单",
+                source.contains("typeValue instanceof String")
+                        && source.contains("&& isDownloadItem((String) typeValue)"));
+        assertTrue("改写结果是 FALSE", source.contains("return Boolean.FALSE;"));
+        assertTrue("命中要进诊断上报", source.contains("LongpressItem#d:"));
+        assertTrue("门 3 必须挂在条目锚点上",
+                source.contains("AnchorKeys.FORCE_SAVE_ITEM_DISABLE")
+                        && source.contains("AnchorKeys.FORCE_SAVE_ITEM_TYPE"));
+    }
+
     private static Path locateForceSaveHooks() {
         return TestPaths.resolveFromCwd(
                 "src/main/java/com/quietbox/app/hooks/ForceSaveHooks.java",

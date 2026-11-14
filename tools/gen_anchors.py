@@ -236,6 +236,18 @@ ANCHORS = {
         "feature": "EN-04", "critical": True,
         "note": "FunctionSwitch type（判定下载类型）",
     },
+    # 9.53.0 长按/分享面板条目模型（混淆名，随宿主版本漂移；缺失时 EN-04 走 critical skip，
+    # 不会碰宿主其它逻辑）。disable 为 true 时点击只弹条目自带的 disableToast。
+    "force_save_item_disable": {
+        "c": "j69.l", "m": "d", "s": "()Ljava/lang/Boolean;",
+        "feature": "EN-04", "critical": True,
+        "note": "长按/分享面板条目 disable（true=灰色且点击只弹 disableToast）",
+    },
+    "force_save_item_type": {
+        "c": "j69.l", "m": "k", "s": "()Ljava/lang/String;",
+        "feature": "EN-04", "critical": True,
+        "note": "条目类型（Download / Dislike / Report …）",
+    },
     "autoplay_detail_open": {
         "c": "com.xingin.detailfeed.services.autoscroll.AutoScrollStateHelper", "m": "isAutoPlayOpen", "s": "()Z",
         "feature": "UI-05", "critical": True,

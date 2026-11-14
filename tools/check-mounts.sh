@@ -281,7 +281,7 @@ DEXSQL = os.environ["CHECK_MOUNTS_DEXSQL"]
 CACHE_DIR = Path(os.environ["CHECK_MOUNTS_CACHE"])
 
 SCHEMA_VERSION = 1
-CHECKLIST_SIZE = 67
+CHECKLIST_SIZE = 69
 TARGET_PACKAGE = "com.xingin.xhs"
 
 errors = []
